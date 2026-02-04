@@ -155,3 +155,48 @@ type Change struct {
 	ChangeType     string    `gorm:"size:10;not null" json:"change_type"` // "added" или "removed"
 	DetectedAt     time.Time `gorm:"autoCreateTime" json:"detected_at"`
 }
+
+// === AI Analytics ===
+
+// AISettings - настройки Gemini AI (редактируется через UI)
+type AISettings struct {
+	ID               uint      `gorm:"primaryKey" json:"id"`
+	Enabled          bool      `gorm:"default:false" json:"enabled"`
+	APIKey           string    `gorm:"size:255" json:"api_key,omitempty"`                 // шифруется при хранении
+	Model            string    `gorm:"size:50;default:'gemini-1.5-flash'" json:"model"`   // модель AI
+	RateLimitPerHour int       `gorm:"default:1" json:"rate_limit_per_hour"`              // лимит запросов в час
+	CacheTTLHours    int       `gorm:"default:24" json:"cache_ttl_hours"`                 // время жизни кэша инсайтов
+	PrivacyMode      bool      `gorm:"default:false" json:"privacy_mode"`                 // заменять названия на ID
+	UpdatedAt        time.Time `gorm:"autoUpdateTime" json:"updated_at"`
+}
+
+// AIUsageLog - лог использования AI (для контроля токенов)
+type AIUsageLog struct {
+	ID           uint      `gorm:"primaryKey" json:"id"`
+	RequestType  string    `gorm:"size:50" json:"request_type"`           // "analyze", "insight"
+	InputTokens  int       `gorm:"default:0" json:"input_tokens"`         // входные токены
+	OutputTokens int       `gorm:"default:0" json:"output_tokens"`        // выходные токены
+	TotalTokens  int       `gorm:"default:0" json:"total_tokens"`         // всего токенов
+	Success      bool      `gorm:"default:true" json:"success"`           // успешный запрос
+	ErrorMessage string    `gorm:"type:text" json:"error_message,omitempty"`
+	CreatedAt    time.Time `gorm:"autoCreateTime" json:"created_at"`
+}
+
+// AIInsight - результат AI-анализа
+type AIInsight struct {
+	ID              uint      `gorm:"primaryKey" json:"id"`
+	AccountID       uint      `gorm:"not null;index" json:"account_id"`
+	InsightType     string    `gorm:"size:50;not null" json:"insight_type"`    // "churn_risk", "growth", "financial_impact"
+	Severity        string    `gorm:"size:20;not null" json:"severity"`        // "info", "warning", "critical"
+	Title           string    `gorm:"size:255;not null" json:"title"`          // заголовок инсайта
+	Description     string    `gorm:"type:text" json:"description"`            // подробное описание
+	FinancialImpact *float64  `json:"financial_impact,omitempty"`              // финансовое влияние
+	Currency        string    `gorm:"size:3" json:"currency,omitempty"`        // валюта влияния
+	Metadata        string    `gorm:"type:jsonb" json:"metadata,omitempty"`    // дополнительные данные (JSON)
+	IsHelpful       *bool     `json:"is_helpful,omitempty"`                    // обратная связь: полезно?
+	FeedbackComment string    `gorm:"type:text" json:"feedback_comment,omitempty"`
+	CreatedAt       time.Time `gorm:"autoCreateTime" json:"created_at"`
+	ExpiresAt       time.Time `gorm:"not null;index" json:"expires_at"`        // автоочистка
+	Account         Account   `gorm:"foreignKey:AccountID" json:"account,omitempty"`
+}
+

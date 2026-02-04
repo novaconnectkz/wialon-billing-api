@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/user/wialon-billing-api/internal/handlers"
 	"github.com/user/wialon-billing-api/internal/middleware"
 	"github.com/user/wialon-billing-api/internal/repository"
+	"github.com/user/wialon-billing-api/internal/services/ai"
 	"github.com/user/wialon-billing-api/internal/services/auth"
 	"github.com/user/wialon-billing-api/internal/services/invoice"
 	"github.com/user/wialon-billing-api/internal/services/nbk"
@@ -39,6 +41,12 @@ func main() {
 	snapshotService := snapshot.NewService(repo, wialonClient)
 	nbkService := nbk.NewService(repo)
 	invoiceService := invoice.NewService(db, repo)
+
+	// Инициализация AI сервиса
+	aiService := ai.NewService(repo)
+	if err := aiService.Initialize(context.Background()); err != nil {
+		log.Printf("[AI] Предупреждение: ошибка инициализации AI: %v", err)
+	}
 
 	// Инициализация cron-задач
 	c := cron.New(cron.WithLocation(time.UTC))
@@ -88,6 +96,7 @@ func main() {
 	// API handlers
 	h := handlers.NewHandler(repo, wialonClient, snapshotService, nbkService, invoiceService)
 	connHandler := handlers.NewConnectionHandler(repo, wialonClient)
+	aiHandler := handlers.NewAIHandler(aiService)
 
 	// Маршруты API
 	api := router.Group("/api")
@@ -182,6 +191,26 @@ func main() {
 			invoices.GET("/:id/pdf", h.GetInvoicePDF)
 			invoices.POST("/generate", h.GenerateInvoices)
 			invoices.PUT("/:id/status", h.UpdateInvoiceStatus)
+		}
+
+		// AI Analytics (настройки - для админов, инсайты - для всех)
+		aiRoutes := api.Group("/ai")
+		aiRoutes.Use(middleware.Auth())
+		{
+			// Инсайты - для всех авторизованных
+			aiRoutes.GET("/insights", aiHandler.GetAIInsights)
+			aiRoutes.GET("/insights/account/:account_id", aiHandler.GetAccountInsights)
+			aiRoutes.POST("/insights/:id/feedback", aiHandler.SendInsightFeedback)
+
+			// Настройки и управление - только для админов
+			aiAdmin := aiRoutes.Group("")
+			aiAdmin.Use(middleware.RequireAdmin())
+			{
+				aiAdmin.GET("/settings", aiHandler.GetAISettings)
+				aiAdmin.PUT("/settings", aiHandler.UpdateAISettings)
+				aiAdmin.GET("/usage", aiHandler.GetAIUsage)
+				aiAdmin.POST("/analyze", aiHandler.TriggerAnalysis)
+			}
 		}
 	}
 

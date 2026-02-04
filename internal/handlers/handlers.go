@@ -187,9 +187,7 @@ func (h *Handler) GetAccountHistory(c *gin.Context) {
 
 	// Получаем токен пользователя
 	userToken := c.GetHeader("Authorization")
-	if strings.HasPrefix(userToken, "Bearer ") {
-		userToken = strings.TrimPrefix(userToken, "Bearer ")
-	}
+	userToken = strings.TrimPrefix(userToken, "Bearer ")
 
 	// Создаём Wialon клиент
 	wialonURL := "https://hst-api.regwialon.com"

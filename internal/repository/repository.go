@@ -43,6 +43,10 @@ func NewPostgresDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
 		&models.Snapshot{},
 		&models.SnapshotUnit{},
 		&models.Change{},
+		// AI Analytics
+		&models.AISettings{},
+		&models.AIUsageLog{},
+		&models.AIInsight{},
 	); err != nil {
 		return nil, err
 	}
@@ -431,4 +435,104 @@ func (r *Repository) UnassignModuleBulk(moduleID uint, accountIDs []uint) (int, 
 func (r *Repository) SetCurrencyBulk(accountIDs []uint, currency string) (int, error) {
 	result := r.db.Model(&models.Account{}).Where("id IN ?", accountIDs).Update("billing_currency", currency)
 	return int(result.RowsAffected), result.Error
+}
+
+// === AI Analytics ===
+
+// GetAISettings возвращает настройки AI
+func (r *Repository) GetAISettings() (*models.AISettings, error) {
+	var settings models.AISettings
+	if err := r.db.First(&settings).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &settings, nil
+}
+
+// SaveAISettings сохраняет настройки AI
+func (r *Repository) SaveAISettings(settings *models.AISettings) error {
+	return r.db.Save(settings).Error
+}
+
+// CreateAIUsageLog создаёт запись лога использования AI
+func (r *Repository) CreateAIUsageLog(log *models.AIUsageLog) error {
+	return r.db.Create(log).Error
+}
+
+// GetAIUsageLogs возвращает логи использования за последние N дней
+func (r *Repository) GetAIUsageLogs(days int) ([]models.AIUsageLog, error) {
+	var logs []models.AIUsageLog
+	since := time.Now().AddDate(0, 0, -days)
+	if err := r.db.Where("created_at >= ?", since).Order("created_at DESC").Find(&logs).Error; err != nil {
+		return nil, err
+	}
+	return logs, nil
+}
+
+// CreateAIInsight создаёт AI инсайт
+func (r *Repository) CreateAIInsight(insight *models.AIInsight) error {
+	return r.db.Create(insight).Error
+}
+
+// GetActiveAIInsights возвращает активные (не истёкшие) инсайты
+func (r *Repository) GetActiveAIInsights() ([]models.AIInsight, error) {
+	var insights []models.AIInsight
+	if err := r.db.Where("expires_at > ?", time.Now()).
+		Preload("Account").
+		Order("created_at DESC").
+		Find(&insights).Error; err != nil {
+		return nil, err
+	}
+	return insights, nil
+}
+
+// GetAIInsightsByAccount возвращает инсайты по аккаунту
+func (r *Repository) GetAIInsightsByAccount(accountID uint) ([]models.AIInsight, error) {
+	var insights []models.AIInsight
+	if err := r.db.Where("account_id = ? AND expires_at > ?", accountID, time.Now()).
+		Order("created_at DESC").
+		Find(&insights).Error; err != nil {
+		return nil, err
+	}
+	return insights, nil
+}
+
+// UpdateAIInsightFeedback обновляет обратную связь по инсайту
+func (r *Repository) UpdateAIInsightFeedback(insightID uint, helpful bool, comment string) error {
+	return r.db.Model(&models.AIInsight{}).Where("id = ?", insightID).
+		Updates(map[string]interface{}{
+			"is_helpful":       helpful,
+			"feedback_comment": comment,
+		}).Error
+}
+
+// GetSnapshotForDate возвращает снимок для аккаунта ближайший к указанной дате
+func (r *Repository) GetSnapshotForDate(accountID uint, date time.Time) (*models.Snapshot, error) {
+	var snapshot models.Snapshot
+	startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
+	endOfDay := startOfDay.AddDate(0, 0, 1)
+
+	if err := r.db.Where("account_id = ? AND snapshot_date >= ? AND snapshot_date < ?",
+		accountID, startOfDay, endOfDay).
+		First(&snapshot).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			// Попробуем найти ближайший снимок до этой даты
+			if err := r.db.Where("account_id = ? AND snapshot_date < ?", accountID, endOfDay).
+				Order("snapshot_date DESC").
+				First(&snapshot).Error; err != nil {
+				return nil, nil
+			}
+		} else {
+			return nil, err
+		}
+	}
+	return &snapshot, nil
+}
+
+// CleanupExpiredAIInsights удаляет истёкшие инсайты
+func (r *Repository) CleanupExpiredAIInsights() (int64, error) {
+	result := r.db.Where("expires_at < ?", time.Now()).Delete(&models.AIInsight{})
+	return result.RowsAffected, result.Error
 }
