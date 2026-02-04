@@ -20,6 +20,7 @@ WORKDIR /app
 # Копируем бинарник
 COPY --from=builder /app/server .
 COPY --from=builder /app/config.yaml.example ./config.yaml
+COPY --from=builder /app/fonts ./fonts
 
 # Порт
 EXPOSE 8080
