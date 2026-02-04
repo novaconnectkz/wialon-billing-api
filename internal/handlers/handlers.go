@@ -1106,6 +1106,36 @@ func (h *Handler) UpdateInvoiceStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, invoice)
 }
 
+// ClearAllInvoices удаляет все счета (с защитным кодом)
+func (h *Handler) ClearAllInvoices(c *gin.Context) {
+	var req struct {
+		ConfirmCode string `json:"confirm_code" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Укажите код подтверждения"})
+		return
+	}
+
+	// Проверяем защитный код
+	if req.ConfirmCode != "220475" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Неверный код подтверждения"})
+		return
+	}
+
+	// Удаляем все счета
+	count, err := h.repo.ClearAllInvoices()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	log.Printf("Удалено %d счетов", count)
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Все счета удалены",
+		"count":   count,
+	})
+}
+
 // === Массовая привязка модулей ===
 
 // AssignModuleBulk привязывает модуль к нескольким аккаунтам

@@ -191,6 +191,7 @@ func main() {
 			invoices.GET("/:id/pdf", h.GetInvoicePDF)
 			invoices.POST("/generate", h.GenerateInvoices)
 			invoices.PUT("/:id/status", h.UpdateInvoiceStatus)
+			invoices.DELETE("/clear", h.ClearAllInvoices)
 		}
 
 		// AI Analytics (настройки - для админов, инсайты - для всех)

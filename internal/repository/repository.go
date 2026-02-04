@@ -379,6 +379,16 @@ func (r *Repository) DeleteInvoiceLines(invoiceID uint) error {
 	return r.db.Where("invoice_id = ?", invoiceID).Delete(&models.InvoiceLine{}).Error
 }
 
+// ClearAllInvoices удаляет все счета и связанные строки
+func (r *Repository) ClearAllInvoices() (int64, error) {
+	// Сначала удаляем строки счетов
+	r.db.Exec("DELETE FROM invoice_lines")
+
+	// Удаляем счета
+	result := r.db.Exec("DELETE FROM invoices")
+	return result.RowsAffected, result.Error
+}
+
 // GetSnapshotsByAccountAndPeriod возвращает снимки аккаунта за месяц
 func (r *Repository) GetSnapshotsByAccountAndPeriod(accountID uint, year, month int) ([]models.Snapshot, error) {
 	startOfMonth := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.Local)
