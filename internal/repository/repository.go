@@ -285,6 +285,19 @@ func (r *Repository) GetLastSnapshot(accountID uint) (*models.Snapshot, error) {
 	return &snapshot, nil
 }
 
+// ClearAllSnapshots удаляет все снимки и связанные данные
+func (r *Repository) ClearAllSnapshots() (int64, error) {
+	// Сначала удаляем SnapshotUnits
+	r.db.Exec("DELETE FROM snapshot_units")
+
+	// Удаляем Changes
+	r.db.Exec("DELETE FROM changes")
+
+	// Удаляем Snapshots
+	result := r.db.Exec("DELETE FROM snapshots")
+	return result.RowsAffected, result.Error
+}
+
 // === Changes ===
 
 // GetChanges возвращает изменения

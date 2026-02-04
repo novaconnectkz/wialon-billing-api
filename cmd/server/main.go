@@ -167,6 +167,7 @@ func main() {
 		{
 			snapshotsAdmin.POST("", h.CreateSnapshot)
 			snapshotsAdmin.POST("/date", h.CreateSnapshotsForDate)
+			snapshotsAdmin.DELETE("/clear", h.ClearAllSnapshots)
 		}
 
 		// Изменения (для всех авторизованных)

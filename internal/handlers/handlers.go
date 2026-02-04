@@ -857,6 +857,36 @@ func (h *Handler) CreateSnapshotsForDate(c *gin.Context) {
 	})
 }
 
+// ClearAllSnapshots удаляет все снимки (с защитным кодом)
+func (h *Handler) ClearAllSnapshots(c *gin.Context) {
+	var req struct {
+		ConfirmCode string `json:"confirm_code" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Укажите код подтверждения"})
+		return
+	}
+
+	// Проверяем защитный код
+	if req.ConfirmCode != "220475" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Неверный код подтверждения"})
+		return
+	}
+
+	// Удаляем все снимки
+	count, err := h.repo.ClearAllSnapshots()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	log.Printf("Удалено %d снимков", count)
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Все снимки удалены",
+		"count":   count,
+	})
+}
+
 // === Changes ===
 
 // GetChanges возвращает изменения
