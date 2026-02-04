@@ -18,4 +18,4 @@ jobs:
             git fetch origin
             git reset --hard origin/main
             cd /root
-            docker-compose up -d --build api
+            flock -x /tmp/docker-compose.lock -c "docker-compose up -d --build --remove-orphans api"
