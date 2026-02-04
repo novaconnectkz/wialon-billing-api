@@ -25,10 +25,12 @@ func NewAIHandler(aiService *ai.Service) *AIHandler {
 func (h *AIHandler) GetAISettings(c *gin.Context) {
 	settings := h.aiService.GetSettings()
 	if settings == nil {
-		// Возвращаем дефолтные настройки
+		// Возвращаем дефолтные настройки для DeepSeek
 		settings = &models.AISettings{
 			Enabled:          false,
-			Model:            "gemini-1.5-flash",
+			AnalysisModel:    ai.ModelReasonerR1,
+			SupportModel:     ai.ModelChatV3,
+			MaxTokens:        2500,
 			RateLimitPerHour: 1,
 			CacheTTLHours:    24,
 		}
@@ -38,7 +40,9 @@ func (h *AIHandler) GetAISettings(c *gin.Context) {
 	response := gin.H{
 		"id":                  settings.ID,
 		"enabled":             settings.Enabled,
-		"model":               settings.Model,
+		"analysis_model":      settings.AnalysisModel,
+		"support_model":       settings.SupportModel,
+		"max_tokens":          settings.MaxTokens,
 		"rate_limit_per_hour": settings.RateLimitPerHour,
 		"cache_ttl_hours":     settings.CacheTTLHours,
 		"privacy_mode":        settings.PrivacyMode,
@@ -54,7 +58,9 @@ func (h *AIHandler) UpdateAISettings(c *gin.Context) {
 	var req struct {
 		Enabled          bool   `json:"enabled"`
 		APIKey           string `json:"api_key"`
-		Model            string `json:"model"`
+		AnalysisModel    string `json:"analysis_model"`
+		SupportModel     string `json:"support_model"`
+		MaxTokens        int    `json:"max_tokens"`
 		RateLimitPerHour int    `json:"rate_limit_per_hour"`
 		CacheTTLHours    int    `json:"cache_ttl_hours"`
 		PrivacyMode      bool   `json:"privacy_mode"`
@@ -73,7 +79,9 @@ func (h *AIHandler) UpdateAISettings(c *gin.Context) {
 
 	// Обновляем поля
 	settings.Enabled = req.Enabled
-	settings.Model = req.Model
+	settings.AnalysisModel = req.AnalysisModel
+	settings.SupportModel = req.SupportModel
+	settings.MaxTokens = req.MaxTokens
 	settings.RateLimitPerHour = req.RateLimitPerHour
 	settings.CacheTTLHours = req.CacheTTLHours
 	settings.PrivacyMode = req.PrivacyMode
@@ -146,7 +154,7 @@ func (h *AIHandler) GetAccountInsights(c *gin.Context) {
 // TriggerAnalysis запускает ручной анализ
 func (h *AIHandler) TriggerAnalysis(c *gin.Context) {
 	if !h.aiService.IsEnabled() {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "AI сервис не настроен. Укажите API ключ в настройках."})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "AI сервис не настроен. Укажите API ключ DeepSeek в настройках."})
 		return
 	}
 

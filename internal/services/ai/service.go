@@ -12,7 +12,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// Service - сервис AI аналитики
+// Service - сервис AI аналитики (DeepSeek)
 type Service struct {
 	repo        *repository.Repository
 	client      *Client
@@ -38,10 +38,12 @@ func (s *Service) Initialize(ctx context.Context) error {
 	}
 
 	if settings == nil {
-		// Создаём настройки по умолчанию
+		// Создаём настройки по умолчанию для DeepSeek
 		settings = &models.AISettings{
 			Enabled:          false,
-			Model:            "gemini-1.5-flash",
+			AnalysisModel:    ModelReasonerR1,
+			SupportModel:     ModelChatV3,
+			MaxTokens:        2500,
 			RateLimitPerHour: 1,
 			CacheTTLHours:    24,
 		}
@@ -58,7 +60,7 @@ func (s *Service) Initialize(ctx context.Context) error {
 	s.updateRateLimiter(settings.RateLimitPerHour)
 
 	if settings.Enabled && settings.APIKey != "" {
-		client, err := NewClient(ctx, settings.APIKey, settings.Model)
+		client, err := NewClient(ctx, settings.APIKey, settings.MaxTokens)
 		if err != nil {
 			log.Printf("[AI] Ошибка инициализации клиента: %v", err)
 			return err
@@ -66,7 +68,7 @@ func (s *Service) Initialize(ctx context.Context) error {
 		s.mu.Lock()
 		s.client = client
 		s.mu.Unlock()
-		log.Println("[AI] Сервис успешно инициализирован")
+		log.Println("[AI] DeepSeek сервис успешно инициализирован")
 	} else {
 		log.Println("[AI] Сервис отключён (нет API ключа или выключен)")
 	}
@@ -80,7 +82,9 @@ func (s *Service) updateRateLimiter(requestsPerHour int) {
 		requestsPerHour = 1
 	}
 	interval := time.Hour / time.Duration(requestsPerHour)
-	s.rateLimiter = rate.NewLimiter(rate.Every(interval), 1)
+	// Burst = requestsPerHour чтобы сразу можно было делать запросы
+	s.rateLimiter = rate.NewLimiter(rate.Every(interval), requestsPerHour)
+	log.Printf("[AI] Rate limiter обновлён: %d запросов/час", requestsPerHour)
 }
 
 // IsEnabled проверяет, активен ли AI сервис
@@ -113,7 +117,7 @@ func (s *Service) UpdateSettings(ctx context.Context, settings *models.AISetting
 
 	// Пересоздаём клиент если нужно
 	if settings.Enabled && settings.APIKey != "" {
-		client, err := NewClient(ctx, settings.APIKey, settings.Model)
+		client, err := NewClient(ctx, settings.APIKey, settings.MaxTokens)
 		if err != nil {
 			return err
 		}
@@ -126,6 +130,26 @@ func (s *Service) UpdateSettings(ctx context.Context, settings *models.AISetting
 	}
 
 	return nil
+}
+
+// GetAnalysisModel возвращает модель для анализа (R1)
+func (s *Service) GetAnalysisModel() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.settings != nil && s.settings.AnalysisModel != "" {
+		return s.settings.AnalysisModel
+	}
+	return ModelReasonerR1
+}
+
+// GetSupportModel возвращает модель для поддержки (V3)
+func (s *Service) GetSupportModel() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.settings != nil && s.settings.SupportModel != "" {
+		return s.settings.SupportModel
+	}
+	return ModelChatV3
 }
 
 // AnalyzeAccount анализирует изменения для одного аккаунта
@@ -174,8 +198,8 @@ func (s *Service) AnalyzeAccount(ctx context.Context, account *models.Account, c
 		units30dAgo, currentSnapshot.TotalUnits-units30dAgo,
 	)
 
-	// Отправляем запрос к AI
-	result, err := s.client.Generate(ctx, AnalyticsSystemPrompt, userPrompt)
+	// Отправляем запрос к AI (используем модель для анализа - R1)
+	result, err := s.client.Generate(ctx, s.GetAnalysisModel(), AnalyticsSystemPrompt, userPrompt)
 	if err != nil {
 		// Логируем ошибку
 		s.logUsage("analyze", 0, 0, 0, false, err.Error())
