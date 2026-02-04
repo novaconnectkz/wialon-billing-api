@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"context"
+	"log"
 	"net/http"
 	"strconv"
 
@@ -158,10 +160,13 @@ func (h *AIHandler) TriggerAnalysis(c *gin.Context) {
 		return
 	}
 
-	// Запускаем анализ асинхронно
+	// Запускаем анализ асинхронно с фоновым контекстом
+	// Важно: используем context.Background() вместо c.Request.Context()
+	// потому что HTTP запрос завершится раньше анализа
 	go func() {
-		if err := h.aiService.AnalyzeLatestSnapshots(c.Request.Context()); err != nil {
-			// Логируем ошибку
+		ctx := context.Background()
+		if err := h.aiService.AnalyzeLatestSnapshots(ctx); err != nil {
+			log.Printf("[AI] Ошибка фонового анализа: %v", err)
 		}
 	}()
 
