@@ -199,3 +199,51 @@ func (h *AIHandler) SendInsightFeedback(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "Спасибо за обратную связь!"})
 }
+
+// GetFleetTrends возвращает данные о трендах флота
+func (h *AIHandler) GetFleetTrends(c *gin.Context) {
+	// Период в днях (по умолчанию 30)
+	days := 30
+	if daysStr := c.Query("days"); daysStr != "" {
+		if d, err := strconv.Atoi(daysStr); err == nil && d > 0 && d <= 90 {
+			days = d
+		}
+	}
+
+	result, err := h.aiService.GetFleetTrends(days)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+// AnalyzeFleetTrends запускает AI анализ трендов флота
+func (h *AIHandler) AnalyzeFleetTrends(c *gin.Context) {
+	if !h.aiService.IsEnabled() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "AI сервис не настроен"})
+		return
+	}
+
+	var req struct {
+		Days int `json:"days"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		req.Days = 30 // по умолчанию
+	}
+
+	if req.Days <= 0 || req.Days > 90 {
+		req.Days = 30
+	}
+
+	// Запускаем анализ
+	result, err := h.aiService.AnalyzeFleetTrends(c.Request.Context(), req.Days)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}

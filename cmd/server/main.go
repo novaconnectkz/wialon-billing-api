@@ -203,6 +203,9 @@ func main() {
 			aiRoutes.GET("/insights/account/:account_id", aiHandler.GetAccountInsights)
 			aiRoutes.POST("/insights/:id/feedback", aiHandler.SendInsightFeedback)
 
+			// Тренды флота - для всех авторизованных
+			aiRoutes.GET("/fleet-trends", aiHandler.GetFleetTrends)
+
 			// Настройки и управление - только для админов
 			aiAdmin := aiRoutes.Group("")
 			aiAdmin.Use(middleware.RequireAdmin())
@@ -211,6 +214,7 @@ func main() {
 				aiAdmin.PUT("/settings", aiHandler.UpdateAISettings)
 				aiAdmin.GET("/usage", aiHandler.GetAIUsage)
 				aiAdmin.POST("/analyze", aiHandler.TriggerAnalysis)
+				aiAdmin.POST("/fleet-analysis", aiHandler.AnalyzeFleetTrends)
 			}
 		}
 	}
