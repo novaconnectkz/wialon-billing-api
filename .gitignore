@@ -1,0 +1,23 @@
+# Конфигурация с секретами
+config.yaml
+
+# База данных
+*.db
+*.sqlite
+
+# Бинарники
+wialon-billing-api
+*.exe
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Логи
+*.log
+
+# Временные файлы
+tmp/
+.DS_Store
