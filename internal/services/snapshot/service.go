@@ -23,6 +23,42 @@ func NewService(repo *repository.Repository, wialon *wialon.Client) *Service {
 	}
 }
 
+// resolveDeactivatedForDealers разрешает подсчёт деактивированных объектов для дилерских аккаунтов.
+// Проблема: поле bact у объектов (avl_unit) указывает на суб-аккаунт (прямого владельца),
+// а не на дилерский аккаунт. Эта функция получает parentAccountId для каждого bact
+// и суммирует деактивированные из дочерних аккаунтов к родительскому (дилерскому).
+func resolveDeactivatedForDealers(wialonClient *wialon.Client, deactivatedByAccount map[int64]int) map[int64]int {
+	// Собираем уникальные bact с деактивированными объектами
+	bactIDs := make([]int64, 0, len(deactivatedByAccount))
+	for bact := range deactivatedByAccount {
+		bactIDs = append(bactIDs, bact)
+	}
+	if len(bactIDs) == 0 {
+		return deactivatedByAccount
+	}
+
+	// Получаем parentAccountId для каждого bact
+	parentData, err := wialonClient.GetAccountsDataBatch(bactIDs)
+	if err != nil {
+		log.Printf("resolveDeactivatedForDealers: ошибка получения parentAccountId: %v", err)
+		return deactivatedByAccount
+	}
+
+	// Создаём итоговую карту: для каждого родителя суммируем деактивированные из дочерних
+	result := make(map[int64]int)
+	for bact, count := range deactivatedByAccount {
+		result[bact] += count
+		if data, ok := parentData[bact]; ok && data.ParentAccountId > 0 {
+			result[data.ParentAccountId] += count
+		}
+	}
+
+	log.Printf("resolveDeactivatedForDealers: обработано %d bact, итого %d записей в карте",
+		len(bactIDs), len(result))
+
+	return result
+}
+
 // CreateDailySnapshot создаёт ежедневный снимок для всех активных аккаунтов
 func (s *Service) CreateDailySnapshot() error {
 	// Получаем аккаунты, участвующие в биллинге
@@ -327,6 +363,9 @@ func (s *Service) createSnapshotsForConnectionRange(wialonClient *wialon.Client,
 		}
 	}
 
+	// Разрешаем деактивированные для дилерских аккаунтов (bact → parentAccountId)
+	deactivatedByAccount = resolveDeactivatedForDealers(wialonClient, deactivatedByAccount)
+
 	// 4. Собираем даты
 	var dates []time.Time
 	for d := fromDate; !d.After(toDate); d = d.AddDate(0, 0, 1) {
@@ -524,6 +563,9 @@ func (s *Service) createSnapshotsForConnection(wialonClient *wialon.Client, acco
 		}
 	}
 
+	// Разрешаем деактивированные для дилерских аккаунтов (bact → parentAccountId)
+	deactivatedByAccount = resolveDeactivatedForDealers(wialonClient, deactivatedByAccount)
+
 	var snapshots []models.Snapshot
 
 	for _, account := range accounts {
@@ -600,6 +642,21 @@ func (s *Service) createSnapshotsViaUnits(wialonClient *wialon.Client, accounts 
 				deactivatedCount++
 			} else {
 				activeCount++
+			}
+		}
+
+		// Для дилерских аккаунтов: если нет прямых объектов, берём из общей карты
+		if deactivatedCount == 0 {
+			// Строим карту деактивированных по bact из всех объектов
+			allDeactivated := make(map[int64]int)
+			for _, unit := range unitsResp.Items {
+				if unit.Active == 0 && unit.DeactivatedTime > 0 {
+					allDeactivated[unit.AccountID]++
+				}
+			}
+			resolved := resolveDeactivatedForDealers(wialonClient, allDeactivated)
+			if resolved[account.WialonID] > 0 {
+				deactivatedCount = resolved[account.WialonID]
 			}
 		}
 
