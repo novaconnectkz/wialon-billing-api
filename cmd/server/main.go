@@ -176,6 +176,7 @@ func main() {
 		{
 			snapshotsAdmin.POST("", h.CreateSnapshot)
 			snapshotsAdmin.POST("/date", h.CreateSnapshotsForDate)
+			snapshotsAdmin.POST("/range", h.CreateSnapshotsForRange)
 			snapshotsAdmin.DELETE("/clear", h.ClearAllSnapshots)
 		}
 

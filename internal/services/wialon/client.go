@@ -62,6 +62,49 @@ type AccountDataResponse struct {
 	Error           *int                   `json:"error,omitempty"`
 }
 
+// GetUnitUsage извлекает avl_unit.usage из settings.combined.services.avl_unit.usage
+// Возвращает количество объектов ТОЛЬКО данного аккаунта (без дочерних)
+func (r *AccountDataResponse) GetUnitUsage() int {
+	if r == nil || r.Settings == nil {
+		return 0
+	}
+	combined, ok := r.Settings["combined"]
+	if !ok {
+		return 0
+	}
+	combinedMap, ok := combined.(map[string]interface{})
+	if !ok {
+		return 0
+	}
+	services, ok := combinedMap["services"]
+	if !ok {
+		return 0
+	}
+	servicesMap, ok := services.(map[string]interface{})
+	if !ok {
+		return 0
+	}
+	avlUnit, ok := servicesMap["avl_unit"]
+	if !ok {
+		return 0
+	}
+	avlUnitMap, ok := avlUnit.(map[string]interface{})
+	if !ok {
+		return 0
+	}
+	usage, ok := avlUnitMap["usage"]
+	if !ok {
+		return 0
+	}
+	switch v := usage.(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	}
+	return 0
+}
+
 // NewClient создаёт новый клиент Wialon API
 func NewClient(cfg config.WialonConfig) *Client {
 	return &Client{
@@ -278,7 +321,7 @@ func (c *Client) GetAccountsByCreatorName(creatorName string) (*SearchItemsRespo
 func (c *Client) GetAccountData(accountID int64) (*AccountDataResponse, error) {
 	params := map[string]interface{}{
 		"itemId": accountID,
-		"type":   4, // Увеличен для получения dealerRights и parentAccountId
+		"type":   2, // usage с дочерними (type=6 показывает 0 для дилеров)
 	}
 
 	paramsJSON, _ := json.Marshal(params)
@@ -322,7 +365,7 @@ func (c *Client) GetAccountsDataBatch(accountIDs []int64) (map[int64]*AccountDat
 				"svc": "account/get_account_data",
 				"params": map[string]interface{}{
 					"itemId": id,
-					"type":   4,
+					"type":   2, // usage с дочерними (type=6 показывает 0 для дилеров)
 				},
 			}
 		}

@@ -855,6 +855,48 @@ func (h *Handler) CreateSnapshotsForDate(c *gin.Context) {
 	})
 }
 
+// CreateSnapshotsForRange создаёт снимки за диапазон дат с обратным расчётом TotalUnits
+func (h *Handler) CreateSnapshotsForRange(c *gin.Context) {
+	var req struct {
+		From string `json:"from" binding:"required"` // формат: "2006-01-02"
+		To   string `json:"to" binding:"required"`   // формат: "2006-01-02"
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Укажите from и to в формате YYYY-MM-DD"})
+		return
+	}
+
+	fromDate, err := time.Parse("2006-01-02", req.From)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат from"})
+		return
+	}
+
+	toDate, err := time.Parse("2006-01-02", req.To)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат to"})
+		return
+	}
+
+	if fromDate.After(toDate) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "from должен быть раньше to"})
+		return
+	}
+
+	snapshots, err := h.snapshot.CreateSnapshotsForRange(fromDate, toDate)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"message": "Снимки созданы с обратным расчётом",
+		"count":   len(snapshots),
+		"from":    req.From,
+		"to":      req.To,
+	})
+}
+
 // ClearAllSnapshots удаляет все снимки (с защитным кодом)
 func (h *Handler) ClearAllSnapshots(c *gin.Context) {
 	var req struct {
