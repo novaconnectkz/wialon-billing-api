@@ -27,15 +27,16 @@ func LoginAuth(username, password string) smtp.Auth {
 }
 
 func (a *loginAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
-	return "LOGIN", []byte(a.username), nil
+	return "LOGIN", nil, nil
 }
 
 func (a *loginAuth) Next(fromServer []byte, more bool) ([]byte, error) {
 	if more {
-		switch strings.ToLower(string(fromServer)) {
-		case "username:", "login:":
+		challenge := strings.TrimSpace(strings.ToLower(string(fromServer)))
+		switch {
+		case strings.Contains(challenge, "username"), strings.Contains(challenge, "login"):
 			return []byte(a.username), nil
-		case "password:":
+		case strings.Contains(challenge, "password"):
 			return []byte(a.password), nil
 		default:
 			return nil, errors.New("неизвестный запрос SMTP LOGIN: " + string(fromServer))
