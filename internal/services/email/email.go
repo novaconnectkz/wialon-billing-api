@@ -148,37 +148,11 @@ func (s *Service) TestConnection() error {
 		return fmt.Errorf("ошибка расшифровки пароля: %w", err)
 	}
 
-	// Подключаемся к SMTP
-	addr := fmt.Sprintf("%s:%d", settings.Host, settings.Port)
-	conn, err := net.DialTimeout("tcp", addr, 10e9) // 10 секунд
+	client, err := s.connectAndAuth(settings, password)
 	if err != nil {
-		return fmt.Errorf("не удалось подключиться к %s: %w", addr, err)
-	}
-	defer conn.Close()
-
-	client, err := smtp.NewClient(conn, settings.Host)
-	if err != nil {
-		return fmt.Errorf("ошибка SMTP клиента: %w", err)
+		return err
 	}
 	defer client.Close()
-
-	// STARTTLS если включено
-	if settings.UseTLS {
-		tlsConfig := &tls.Config{ServerName: settings.Host}
-		if err := client.StartTLS(tlsConfig); err != nil {
-			return fmt.Errorf("ошибка STARTTLS: %w", err)
-		}
-	}
-
-	// Авторизация (сначала LOGIN, потом PLAIN)
-	auth := LoginAuth(settings.Username, password)
-	if err := client.Auth(auth); err != nil {
-		log.Printf("[EMAIL] TestConnection: LOGIN auth не удался, пробуем PLAIN: %v", err)
-		plainAuth := smtp.PlainAuth("", settings.Username, password, settings.Host)
-		if err := client.Auth(plainAuth); err != nil {
-			return fmt.Errorf("ошибка авторизации SMTP: %w", err)
-		}
-	}
 
 	// Тестовое письмо
 	subject := "Тест SMTP подключения"
@@ -215,6 +189,61 @@ func (s *Service) send(to, subject, htmlBody string) error {
 	return s.sendWithAttachments(to, subject, htmlBody)
 }
 
+// connectAndAuth подключается к SMTP и авторизуется (LOGIN → переподключение → PLAIN)
+func (s *Service) connectAndAuth(settings *models.SMTPSettings, password string) (*smtp.Client, error) {
+	addr := net.JoinHostPort(settings.Host, fmt.Sprintf("%d", settings.Port))
+
+	// Попытка 1: LOGIN auth
+	client, err := s.dial(addr, settings)
+	if err != nil {
+		return nil, err
+	}
+
+	loginA := LoginAuth(settings.Username, password)
+	if err := client.Auth(loginA); err != nil {
+		log.Printf("[EMAIL] LOGIN auth не удался: %v, пробуем PLAIN...", err)
+		client.Close()
+
+		// Попытка 2: новое соединение + PLAIN auth
+		client, err = s.dial(addr, settings)
+		if err != nil {
+			return nil, err
+		}
+
+		plainA := smtp.PlainAuth("", settings.Username, password, settings.Host)
+		if err := client.Auth(plainA); err != nil {
+			client.Close()
+			return nil, fmt.Errorf("ошибка авторизации SMTP (LOGIN и PLAIN не сработали): %w", err)
+		}
+	}
+
+	return client, nil
+}
+
+// dial устанавливает TCP-соединение, создаёт SMTP-клиент и делает STARTTLS
+func (s *Service) dial(addr string, settings *models.SMTPSettings) (*smtp.Client, error) {
+	conn, err := net.DialTimeout("tcp", addr, 10e9)
+	if err != nil {
+		return nil, fmt.Errorf("не удалось подключиться к SMTP %s: %w", addr, err)
+	}
+
+	client, err := smtp.NewClient(conn, settings.Host)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("ошибка SMTP клиента: %w", err)
+	}
+
+	if settings.UseTLS {
+		tlsConfig := &tls.Config{ServerName: settings.Host}
+		if err := client.StartTLS(tlsConfig); err != nil {
+			client.Close()
+			return nil, fmt.Errorf("ошибка STARTTLS: %w", err)
+		}
+	}
+
+	return client, nil
+}
+
 // sendWithAttachments отправляет письмо с опциональными вложениями
 func (s *Service) sendWithAttachments(to, subject, htmlBody string, attachments ...Attachment) error {
 	settings, err := s.repo.GetSMTPSettings()
@@ -231,36 +260,11 @@ func (s *Service) sendWithAttachments(to, subject, htmlBody string, attachments 
 		return fmt.Errorf("ошибка расшифровки пароля: %w", err)
 	}
 
-	// Подключение к SMTP
-	addr := fmt.Sprintf("%s:%d", settings.Host, settings.Port)
-	conn, err := net.DialTimeout("tcp", addr, 10e9)
+	client, err := s.connectAndAuth(settings, password)
 	if err != nil {
-		return fmt.Errorf("не удалось подключиться к SMTP: %w", err)
-	}
-	defer conn.Close()
-
-	client, err := smtp.NewClient(conn, settings.Host)
-	if err != nil {
-		return fmt.Errorf("ошибка SMTP клиента: %w", err)
+		return err
 	}
 	defer client.Close()
-
-	if settings.UseTLS {
-		tlsConfig := &tls.Config{ServerName: settings.Host}
-		if err := client.StartTLS(tlsConfig); err != nil {
-			return fmt.Errorf("ошибка STARTTLS: %w", err)
-		}
-	}
-
-	auth := LoginAuth(settings.Username, password)
-	if err := client.Auth(auth); err != nil {
-		log.Printf("[EMAIL] LOGIN auth не удался, пробуем PLAIN: %v", err)
-		// Фоллбэк на PLAIN
-		plainAuth := smtp.PlainAuth("", settings.Username, password, settings.Host)
-		if err := client.Auth(plainAuth); err != nil {
-			return fmt.Errorf("ошибка авторизации SMTP: %w", err)
-		}
-	}
 
 	return s.sendMessage(client, settings, to, subject, htmlBody, attachments)
 }
