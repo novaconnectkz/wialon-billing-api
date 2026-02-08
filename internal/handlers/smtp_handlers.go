@@ -127,6 +127,18 @@ func (h *SMTPHandler) TestSMTPConnection(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Автоматически включаем SMTP после успешного теста
+	settings, err := h.repo.GetSMTPSettings()
+	if err == nil && settings != nil && !settings.Enabled {
+		settings.Enabled = true
+		if saveErr := h.repo.SaveSMTPSettings(settings); saveErr != nil {
+			log.Printf("[SMTP] Ошибка автовключения: %v", saveErr)
+		} else {
+			log.Printf("[SMTP] SMTP автоматически включён после успешного теста")
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{"message": "Тестовое письмо отправлено"})
 }
 
