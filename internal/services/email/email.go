@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"mime/multipart"
@@ -15,6 +16,33 @@ import (
 	"github.com/user/wialon-billing-api/internal/models"
 	"github.com/user/wialon-billing-api/internal/repository"
 )
+
+// loginAuth реализует SMTP AUTH LOGIN (не поддерживается стандартной библиотекой Go)
+type loginAuth struct {
+	username, password string
+}
+
+func LoginAuth(username, password string) smtp.Auth {
+	return &loginAuth{username, password}
+}
+
+func (a *loginAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
+	return "LOGIN", []byte(a.username), nil
+}
+
+func (a *loginAuth) Next(fromServer []byte, more bool) ([]byte, error) {
+	if more {
+		switch strings.ToLower(string(fromServer)) {
+		case "username:", "login:":
+			return []byte(a.username), nil
+		case "password:":
+			return []byte(a.password), nil
+		default:
+			return nil, errors.New("неизвестный запрос SMTP LOGIN: " + string(fromServer))
+		}
+	}
+	return nil, nil
+}
 
 // Attachment - вложение к письму
 type Attachment struct {
@@ -142,10 +170,14 @@ func (s *Service) TestConnection() error {
 		}
 	}
 
-	// Авторизация
-	auth := smtp.PlainAuth("", settings.Username, password, settings.Host)
+	// Авторизация (сначала LOGIN, потом PLAIN)
+	auth := LoginAuth(settings.Username, password)
 	if err := client.Auth(auth); err != nil {
-		return fmt.Errorf("ошибка авторизации SMTP: %w", err)
+		log.Printf("[EMAIL] TestConnection: LOGIN auth не удался, пробуем PLAIN: %v", err)
+		plainAuth := smtp.PlainAuth("", settings.Username, password, settings.Host)
+		if err := client.Auth(plainAuth); err != nil {
+			return fmt.Errorf("ошибка авторизации SMTP: %w", err)
+		}
 	}
 
 	// Тестовое письмо
@@ -220,9 +252,14 @@ func (s *Service) sendWithAttachments(to, subject, htmlBody string, attachments 
 		}
 	}
 
-	auth := smtp.PlainAuth("", settings.Username, password, settings.Host)
+	auth := LoginAuth(settings.Username, password)
 	if err := client.Auth(auth); err != nil {
-		return fmt.Errorf("ошибка авторизации SMTP: %w", err)
+		log.Printf("[EMAIL] LOGIN auth не удался, пробуем PLAIN: %v", err)
+		// Фоллбэк на PLAIN
+		plainAuth := smtp.PlainAuth("", settings.Username, password, settings.Host)
+		if err := client.Auth(plainAuth); err != nil {
+			return fmt.Errorf("ошибка авторизации SMTP: %w", err)
+		}
 	}
 
 	return s.sendMessage(client, settings, to, subject, htmlBody, attachments)
