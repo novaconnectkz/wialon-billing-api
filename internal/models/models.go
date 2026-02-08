@@ -220,3 +220,31 @@ type AIInsight struct {
 	ExpiresAt       time.Time `gorm:"not null;index" json:"expires_at"` // автоочистка
 	Account         Account   `gorm:"foreignKey:AccountID" json:"account,omitempty"`
 }
+
+// === SMTP & Email Templates ===
+
+// SMTPSettings - настройки почтового сервера
+type SMTPSettings struct {
+	ID                uint      `gorm:"primaryKey" json:"id"`
+	Enabled           bool      `gorm:"default:false" json:"enabled"`
+	Host              string    `gorm:"size:255" json:"host"`        // smtp.gmail.com
+	Port              int       `gorm:"default:587" json:"port"`     // 587 (TLS), 465 (SSL)
+	Username          string    `gorm:"size:255" json:"username"`    // логин
+	EncryptedPassword string    `gorm:"size:512" json:"-"`           // AES-256-GCM, не сериализуется
+	FromEmail         string    `gorm:"size:255" json:"from_email"`  // адрес отправителя
+	FromName          string    `gorm:"size:255" json:"from_name"`   // имя отправителя
+	UseTLS            bool      `gorm:"default:true" json:"use_tls"` // TLS/STARTTLS
+	UpdatedAt         time.Time `gorm:"autoUpdateTime" json:"updated_at"`
+}
+
+// EmailTemplate - шаблон письма для разных типов рассылок
+type EmailTemplate struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	Type      string    `gorm:"size:50;uniqueIndex;not null" json:"type"` // "otp", "invoice", "notification"
+	Name      string    `gorm:"size:255;not null" json:"name"`            // "Код авторизации"
+	Subject   string    `gorm:"size:500;not null" json:"subject"`         // "Ваш код: {{code}}"
+	HTMLBody  string    `gorm:"type:text;not null" json:"html_body"`      // HTML из TipTap-редактора
+	Variables string    `gorm:"type:text" json:"variables"`               // JSON: ["code","email","expires_minutes"]
+	IsActive  bool      `gorm:"default:true" json:"is_active"`
+	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updated_at"`
+}

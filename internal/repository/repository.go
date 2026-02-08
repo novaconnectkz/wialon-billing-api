@@ -54,6 +54,9 @@ func NewPostgresDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
 		&models.AISettings{},
 		&models.AIUsageLog{},
 		&models.AIInsight{},
+		// SMTP & Email Templates
+		&models.SMTPSettings{},
+		&models.EmailTemplate{},
 	); err != nil {
 		return nil, err
 	}
@@ -746,4 +749,49 @@ func (r *Repository) GetSnapshotsByWialonID(wialonID int64, year, month int) ([]
 		return nil, err
 	}
 	return snapshots, nil
+}
+
+// === SMTP & Email Templates ===
+
+// GetSMTPSettings возвращает настройки SMTP
+func (r *Repository) GetSMTPSettings() (*models.SMTPSettings, error) {
+	var settings models.SMTPSettings
+	if err := r.db.First(&settings).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &settings, nil
+}
+
+// SaveSMTPSettings сохраняет настройки SMTP
+func (r *Repository) SaveSMTPSettings(settings *models.SMTPSettings) error {
+	return r.db.Save(settings).Error
+}
+
+// GetEmailTemplates возвращает все шаблоны писем
+func (r *Repository) GetEmailTemplates() ([]models.EmailTemplate, error) {
+	var templates []models.EmailTemplate
+	if err := r.db.Order("type ASC").Find(&templates).Error; err != nil {
+		return nil, err
+	}
+	return templates, nil
+}
+
+// GetEmailTemplateByType возвращает шаблон по типу
+func (r *Repository) GetEmailTemplateByType(templateType string) (*models.EmailTemplate, error) {
+	var tmpl models.EmailTemplate
+	if err := r.db.Where("type = ?", templateType).First(&tmpl).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &tmpl, nil
+}
+
+// SaveEmailTemplate сохраняет шаблон письма
+func (r *Repository) SaveEmailTemplate(tmpl *models.EmailTemplate) error {
+	return r.db.Save(tmpl).Error
 }

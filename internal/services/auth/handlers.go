@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/user/wialon-billing-api/internal/models"
 	"github.com/user/wialon-billing-api/internal/repository"
+	"github.com/user/wialon-billing-api/internal/services/email"
 )
 
 const (
@@ -27,12 +29,13 @@ const (
 
 // AuthHandler - обработчики авторизации
 type AuthHandler struct {
-	repo *repository.Repository
+	repo         *repository.Repository
+	emailService *email.Service
 }
 
 // NewAuthHandler создаёт новый обработчик авторизации
-func NewAuthHandler(repo *repository.Repository) *AuthHandler {
-	return &AuthHandler{repo: repo}
+func NewAuthHandler(repo *repository.Repository, emailService *email.Service) *AuthHandler {
+	return &AuthHandler{repo: repo, emailService: emailService}
 }
 
 // RequestCodeRequest - запрос на отправку кода
@@ -116,12 +119,20 @@ func (h *AuthHandler) RequestCode(c *gin.Context) {
 		return
 	}
 
-	// TODO: Отправка email (пока только для не-админов)
-	// Для MVP просто логируем код
+	// Отправка OTP-кода по email (кроме админа)
 	if email != adminEmail {
-		// В будущем здесь будет отправка email
-		// email.Send(email, "Ваш код: " + code)
-		println("OTP код для", email, ":", code)
+		if h.emailService != nil && h.emailService.IsEnabled() {
+			if err := h.emailService.SendOTP(email, code); err != nil {
+				log.Printf("[ОТП] Ошибка отправки OTP на %s: %v", email, err)
+				// Не блокируем авторизацию, логируем код в консоль
+				log.Printf("[ОТП] Фоллбэк: код для %s: %s", email, code)
+			} else {
+				log.Printf("[ОТП] Код отправлен на %s", email)
+			}
+		} else {
+			// SMTP не настроен — логируем в консоль
+			log.Printf("[ОТП] SMTP не настроен. Код для %s: %s", email, code)
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{

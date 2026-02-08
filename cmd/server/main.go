@@ -11,13 +11,16 @@ import (
 	"github.com/user/wialon-billing-api/internal/config"
 	"github.com/user/wialon-billing-api/internal/handlers"
 	"github.com/user/wialon-billing-api/internal/middleware"
+	"github.com/user/wialon-billing-api/internal/models"
 	"github.com/user/wialon-billing-api/internal/repository"
 	"github.com/user/wialon-billing-api/internal/services/ai"
 	"github.com/user/wialon-billing-api/internal/services/auth"
+	"github.com/user/wialon-billing-api/internal/services/email"
 	"github.com/user/wialon-billing-api/internal/services/invoice"
 	"github.com/user/wialon-billing-api/internal/services/nbk"
 	"github.com/user/wialon-billing-api/internal/services/snapshot"
 	"github.com/user/wialon-billing-api/internal/services/wialon"
+	"gorm.io/gorm"
 )
 
 func main() {
@@ -104,13 +107,20 @@ func main() {
 	// CORS middleware
 	router.Use(middleware.CORS())
 
+	// Инициализация Email-сервиса
+	emailService := email.NewService(repo)
+
+	// Сид дефолтных шаблонов писем
+	seedEmailTemplates(db)
+
 	// Auth handlers
-	authHandler := auth.NewAuthHandler(repo)
+	authHandler := auth.NewAuthHandler(repo, emailService)
 
 	// API handlers
 	h := handlers.NewHandler(repo, wialonClient, snapshotService, nbkService, invoiceService)
 	connHandler := handlers.NewConnectionHandler(repo, wialonClient)
 	aiHandler := handlers.NewAIHandler(aiService)
+	smtpHandler := handlers.NewSMTPHandler(repo, emailService, invoiceService)
 
 	// Маршруты API
 	api := router.Group("/api")
@@ -209,6 +219,20 @@ func main() {
 			invoices.POST("/generate", h.GenerateInvoices)
 			invoices.PUT("/:id/status", h.UpdateInvoiceStatus)
 			invoices.DELETE("/clear", h.ClearAllInvoices)
+			invoices.POST("/:id/send", smtpHandler.SendInvoiceEmail)
+		}
+
+		// SMTP и шаблоны писем (только для админов)
+		smtpRoutes := api.Group("/smtp")
+		smtpRoutes.Use(middleware.Auth(), middleware.RequireAdmin())
+		{
+			smtpRoutes.GET("/settings", smtpHandler.GetSMTPSettings)
+			smtpRoutes.PUT("/settings", smtpHandler.UpdateSMTPSettings)
+			smtpRoutes.POST("/test", smtpHandler.TestSMTPConnection)
+			smtpRoutes.GET("/templates", smtpHandler.GetEmailTemplates)
+			smtpRoutes.GET("/templates/:type", smtpHandler.GetEmailTemplate)
+			smtpRoutes.PUT("/templates/:type", smtpHandler.UpdateEmailTemplate)
+			smtpRoutes.POST("/templates/:type/preview", smtpHandler.PreviewEmailTemplate)
 		}
 
 		// AI Analytics (настройки - для админов, инсайты - для всех)
@@ -301,5 +325,73 @@ func generateInvoicesWithRetry(invoiceService *invoice.Service, nbkService *nbk.
 		log.Printf("[Счета] Ошибка генерации: %v", err)
 	} else {
 		log.Printf("[Счета] Сгенерировано %d счетов (без курсов)", len(invoices))
+	}
+}
+
+// seedEmailTemplates создаёт дефолтные шаблоны писем при первом запуске
+func seedEmailTemplates(db *gorm.DB) {
+	templates := []models.EmailTemplate{
+		{
+			Type:    "otp",
+			Name:    "Код авторизации",
+			Subject: "Ваш код авторизации: {{code}}",
+			HTMLBody: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+<h2 style="color: #333;">Код авторизации</h2>
+<p>Ваш код для входа в систему:</p>
+<div style="background: #f4f4f4; padding: 20px; text-align: center; border-radius: 8px; margin: 20px 0;">
+<span style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #2196F3;">{{code}}</span>
+</div>
+<p style="color: #666; font-size: 14px;">Код действителен {{expires_minutes}} минут.</p>
+<hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+<p style="color: #999; font-size: 12px;">Если вы не запрашивали код, проигнорируйте это письмо.</p>
+</div>`,
+			Variables: `["code", "email", "expires_minutes"]`,
+			IsActive:  true,
+		},
+		{
+			Type:    "invoice",
+			Name:    "Счёт на оплату",
+			Subject: "Счёт на оплату №{{invoice_number}} за {{period}}",
+			HTMLBody: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+<h2 style="color: #333;">Счёт на оплату</h2>
+<p>Уважаемый клиент <strong>{{company_name}}</strong>,</p>
+<p>Во вложении счёт на оплату услуг за {{period}}:</p>
+<div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin: 15px 0;">
+<p><strong>Сумма:</strong> {{amount}} {{currency}}</p>
+<p><strong>Период:</strong> {{period}}</p>
+<p><strong>Номер счёта:</strong> {{invoice_number}}</p>
+</div>
+<p>Просим оплатить счёт в установленные сроки.</p>
+<hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+<p style="color: #999; font-size: 12px;">Это автоматическое уведомление от системы Wialon Billing.</p>
+</div>`,
+			Variables: `["company_name", "period", "amount", "currency", "invoice_number"]`,
+			IsActive:  true,
+		},
+		{
+			Type:    "notification",
+			Name:    "Уведомление",
+			Subject: "{{title}}",
+			HTMLBody: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+<h2 style="color: #333;">{{title}}</h2>
+<div style="padding: 15px 0;">{{message}}</div>
+<hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+<p style="color: #999; font-size: 12px;">Wialon Billing System • {{date}}</p>
+</div>`,
+			Variables: `["title", "message", "date"]`,
+			IsActive:  true,
+		},
+	}
+
+	for _, tmpl := range templates {
+		var existing models.EmailTemplate
+		if err := db.Where("type = ?", tmpl.Type).First(&existing).Error; err != nil {
+			// Шаблон не найден — создаём
+			if err := db.Create(&tmpl).Error; err != nil {
+				log.Printf("[Сид] Ошибка создания шаблона '%s': %v", tmpl.Type, err)
+			} else {
+				log.Printf("[Сид] Создан шаблон письма: %s", tmpl.Type)
+			}
+		}
 	}
 }
