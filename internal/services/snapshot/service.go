@@ -59,6 +59,23 @@ func resolveDeactivatedForDealers(wialonClient *wialon.Client, deactivatedByAcco
 	return result
 }
 
+// EnsureDailySnapshot — идемпотентная обёртка: создаёт снимок за вчерашний день,
+// только если его ещё нет. Безопасна для повторного вызова.
+func (s *Service) EnsureDailySnapshot() error {
+	yesterday := time.Now().UTC().AddDate(0, 0, -1)
+	exists, err := s.repo.HasSnapshotsForDate(yesterday)
+	if err != nil {
+		return err
+	}
+	if exists {
+		log.Printf("Снимки за %s уже существуют, пропускаем", yesterday.Format("2006-01-02"))
+		return nil
+	}
+
+	log.Printf("Снимков за %s нет, создаём...", yesterday.Format("2006-01-02"))
+	return s.CreateDailySnapshot()
+}
+
 // CreateDailySnapshot создаёт ежедневный снимок для всех активных аккаунтов
 func (s *Service) CreateDailySnapshot() error {
 	// Получаем аккаунты, участвующие в биллинге

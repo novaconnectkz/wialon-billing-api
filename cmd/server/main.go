@@ -51,18 +51,18 @@ func main() {
 	// Инициализация cron-задач
 	c := cron.New(cron.WithLocation(time.UTC))
 
-	// Ежедневные снимки в 00:01 UTC (снимок создаётся за предыдущий день)
-	_, err = c.AddFunc("1 0 * * *", func() {
-		log.Println("Запуск ежедневного снимка...")
-		if err := snapshotService.CreateDailySnapshot(); err != nil {
-			log.Printf("Ошибка создания снимка: %v", err)
+	// Снимки — каждый час, идемпотентно (проверяет наличие снимка за вчера)
+	_, err = c.AddFunc("0 * * * *", func() {
+		log.Println("[Cron] Проверка снимков...")
+		if err := snapshotService.EnsureDailySnapshot(); err != nil {
+			log.Printf("[Cron] Ошибка создания снимка: %v", err)
 		}
 	})
 	if err != nil {
 		log.Fatalf("Ошибка добавления cron-задачи снимков: %v", err)
 	}
 
-	// Курсы валют НБК - ежедневно в 04:00 UTC (07:00 по Москве, 09:00 по Казахстану)
+	// Курсы валют НБК - ежедневно в 04:00 UTC (09:00 по Казахстану)
 	_, err = c.AddFunc("0 4 * * *", func() {
 		log.Println("Запуск получения курсов НБК...")
 		if err := nbkService.FetchExchangeRates(); err != nil {
@@ -73,11 +73,15 @@ func main() {
 		log.Fatalf("Ошибка добавления cron-задачи курсов: %v", err)
 	}
 
-	// Загружаем курсы при старте если их нет
+	// Проверка снимков и курсов при запуске приложения
 	go func() {
-		log.Println("Проверка курсов при запуске...")
+		log.Println("[Старт] Проверка курсов...")
 		if err := nbkService.FetchExchangeRates(); err != nil {
-			log.Printf("Ошибка загрузки курсов при старте: %v", err)
+			log.Printf("[Старт] Ошибка загрузки курсов: %v", err)
+		}
+		log.Println("[Старт] Проверка снимков за вчера...")
+		if err := snapshotService.EnsureDailySnapshot(); err != nil {
+			log.Printf("[Старт] Ошибка создания снимка: %v", err)
 		}
 	}()
 

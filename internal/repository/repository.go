@@ -357,6 +357,20 @@ func (r *Repository) GetLastSnapshot(accountID uint) (*models.Snapshot, error) {
 	return &snapshot, nil
 }
 
+// HasSnapshotsForDate проверяет, существуют ли снимки за указанную дату
+func (r *Repository) HasSnapshotsForDate(date time.Time) (bool, error) {
+	startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, time.UTC)
+	endOfDay := startOfDay.AddDate(0, 0, 1)
+
+	var count int64
+	if err := r.db.Model(&models.Snapshot{}).
+		Where("snapshot_date >= ? AND snapshot_date < ?", startOfDay, endOfDay).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // ClearAllSnapshots удаляет все снимки и связанные данные
 func (r *Repository) ClearAllSnapshots() (int64, error) {
 	// Сначала удаляем SnapshotUnits
