@@ -1774,3 +1774,279 @@ func (h *Handler) ExportAccountChargesExcel(c *gin.Context) {
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
 	c.Data(http.StatusOK, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buf.Bytes())
 }
+
+// === Partner Portal ===
+
+// GetPartnerAccount возвращает данные аккаунта партнёра
+func (h *Handler) GetPartnerAccount(c *gin.Context) {
+	partnerWialonID, exists := c.Get("partnerWialonID")
+	if !exists || partnerWialonID == nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Нет привязки к аккаунту"})
+		return
+	}
+
+	wialonID := partnerWialonID.(*int64)
+	account, err := h.repo.GetAccountByWialonID(*wialonID)
+	if err != nil || account == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Аккаунт не найден"})
+		return
+	}
+
+	// Проверяем актуальный статус блокировки в Wialon API
+	if h.wialon != nil {
+		if accData, err := h.wialon.GetAccountData(*wialonID); err == nil && accData != nil && accData.Enabled != nil {
+			newBlocked := *accData.Enabled == 0
+			if account.IsBlocked != newBlocked {
+				account.IsBlocked = newBlocked
+				_ = h.repo.UpdateAccount(account)
+				log.Printf("GetPartnerAccount: обновлён статус блокировки для %s (wialon_id=%d): is_blocked=%v",
+					account.Name, *wialonID, newBlocked)
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, account)
+}
+
+// GetPartnerInvoices возвращает счета партнёра
+func (h *Handler) GetPartnerInvoices(c *gin.Context) {
+	partnerWialonID, exists := c.Get("partnerWialonID")
+	if !exists || partnerWialonID == nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Нет привязки к аккаунту"})
+		return
+	}
+
+	wialonID := partnerWialonID.(*int64)
+	invoices, err := h.repo.GetInvoicesByWialonID(*wialonID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, invoices)
+}
+
+// GetPartnerCharges возвращает начисления партнёра за месяц
+func (h *Handler) GetPartnerCharges(c *gin.Context) {
+	partnerWialonID, exists := c.Get("partnerWialonID")
+	if !exists || partnerWialonID == nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Нет привязки к аккаунту"})
+		return
+	}
+
+	wialonID := partnerWialonID.(*int64)
+
+	// Парсим параметры периода (по умолчанию текущий месяц)
+	now := time.Now()
+	year := now.Year()
+	month := int(now.Month())
+
+	if yearStr := c.Query("year"); yearStr != "" {
+		if y, err := strconv.Atoi(yearStr); err == nil && y > 2000 && y < 2100 {
+			year = y
+		}
+	}
+	if monthStr := c.Query("month"); monthStr != "" {
+		if m, err := strconv.Atoi(monthStr); err == nil && m >= 1 && m <= 12 {
+			month = m
+		}
+	}
+
+	// Пересчитываем начисления (на случай если ещё не рассчитаны за текущий/выбранный месяц)
+	account, err := h.repo.GetAccountByWialonID(*wialonID)
+	if err == nil && account != nil {
+		if calcErr := h.snapshot.CalculateDailyChargesForPeriod(account.ID, year, month); calcErr != nil {
+			log.Printf("GetPartnerCharges: ошибка пересчёта начислений для аккаунта %d: %v", account.ID, calcErr)
+		}
+	}
+
+	charges, err := h.repo.GetDailyChargesByWialonID(*wialonID, year, month)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"charges": charges,
+		"year":    year,
+		"month":   month,
+	})
+}
+
+// GetPartnerBalance возвращает сводку по балансу партнёра
+func (h *Handler) GetPartnerBalance(c *gin.Context) {
+	partnerWialonID, exists := c.Get("partnerWialonID")
+	if !exists || partnerWialonID == nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Нет привязки к аккаунту"})
+		return
+	}
+
+	wialonID := partnerWialonID.(*int64)
+
+	// Получаем аккаунт
+	account, err := h.repo.GetAccountByWialonID(*wialonID)
+	if err != nil || account == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Аккаунт не найден"})
+		return
+	}
+
+	// Получаем все счета
+	invoices, err := h.repo.GetInvoicesByWialonID(*wialonID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Считаем статистику по счетам
+	var totalInvoiced float64
+	var totalPaid float64
+	var pendingCount int
+	var paidCount int
+
+	for _, inv := range invoices {
+		totalInvoiced += inv.TotalAmount
+		if inv.Status == "paid" {
+			totalPaid += inv.TotalAmount
+			paidCount++
+		} else {
+			pendingCount++
+		}
+	}
+
+	// Получаем начисления за текущий месяц (с предварительным пересчётом)
+	now := time.Now()
+	if calcErr := h.snapshot.CalculateDailyChargesForPeriod(account.ID, now.Year(), int(now.Month())); calcErr != nil {
+		log.Printf("GetPartnerBalance: ошибка пересчёта начислений за текущий месяц для аккаунта %d: %v", account.ID, calcErr)
+	}
+	charges, _ := h.repo.GetDailyChargesByWialonID(*wialonID, now.Year(), int(now.Month()))
+
+	var currentMonthTotal float64
+	for _, ch := range charges {
+		currentMonthTotal += ch.DailyCost
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"account_name":        account.Name,
+		"wialon_id":           account.WialonID,
+		"billing_currency":    account.BillingCurrency,
+		"total_invoiced":      math.Round(totalInvoiced*100) / 100,
+		"total_paid":          math.Round(totalPaid*100) / 100,
+		"outstanding_balance": math.Round((totalInvoiced-totalPaid)*100) / 100,
+		"current_month_total": math.Round(currentMonthTotal*100) / 100,
+		"invoices_count":      len(invoices),
+		"pending_count":       pendingCount,
+		"paid_count":          paidCount,
+	})
+}
+
+// GetPartnerSnapshots возвращает снимки (данные по дням) для партнёра
+func (h *Handler) GetPartnerSnapshots(c *gin.Context) {
+	partnerWialonID, exists := c.Get("partnerWialonID")
+	if !exists || partnerWialonID == nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Нет привязки к аккаунту"})
+		return
+	}
+
+	wialonID := partnerWialonID.(*int64)
+
+	// Парсим параметры периода (по умолчанию текущий месяц)
+	now := time.Now()
+	year := now.Year()
+	month := int(now.Month())
+
+	if yearStr := c.Query("year"); yearStr != "" {
+		if y, err := strconv.Atoi(yearStr); err == nil && y > 2000 && y < 2100 {
+			year = y
+		}
+	}
+	if monthStr := c.Query("month"); monthStr != "" {
+		if m, err := strconv.Atoi(monthStr); err == nil && m >= 1 && m <= 12 {
+			month = m
+		}
+	}
+
+	snapshots, err := h.repo.GetSnapshotsByWialonID(*wialonID, year, month)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Формируем ответ с нужными полями
+	type SnapshotDay struct {
+		Date             string `json:"date"`
+		TotalUnits       int    `json:"total_units"`
+		UnitsCreated     int    `json:"units_created"`
+		UnitsDeleted     int    `json:"units_deleted"`
+		UnitsDeactivated int    `json:"units_deactivated"`
+	}
+
+	var days []SnapshotDay
+	for _, s := range snapshots {
+		days = append(days, SnapshotDay{
+			Date:             s.SnapshotDate.Format("2006-01-02"),
+			TotalUnits:       s.TotalUnits,
+			UnitsCreated:     s.UnitsCreated,
+			UnitsDeleted:     s.UnitsDeleted,
+			UnitsDeactivated: s.UnitsDeactivated,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"snapshots": days,
+		"year":      year,
+		"month":     month,
+	})
+}
+
+// GetPartnerInvoicePDF возвращает PDF счёта партнёра
+func (h *Handler) GetPartnerInvoicePDF(c *gin.Context) {
+	partnerWialonID, exists := c.Get("partnerWialonID")
+	if !exists || partnerWialonID == nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Нет привязки к аккаунту"})
+		return
+	}
+
+	wialonID := partnerWialonID.(*int64)
+
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный ID"})
+		return
+	}
+
+	// Получаем счёт
+	inv, err := h.repo.GetInvoiceByID(uint(id))
+	if err != nil || inv == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Счёт не найден"})
+		return
+	}
+
+	// Проверяем принадлежность счёта партнёру
+	account, err := h.repo.GetAccountByID(inv.AccountID)
+	if err != nil || account == nil || account.WialonID != *wialonID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Счёт не принадлежит вашему аккаунту"})
+		return
+	}
+
+	// Получаем настройки
+	settings, err := h.repo.GetSettings()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка получения настроек"})
+		return
+	}
+
+	// Генерируем PDF
+	generator := invoicesvc.NewPDFGenerator()
+	pdfBytes, err := generator.GenerateInvoicePDF(inv, settings, account)
+	if err != nil {
+		log.Printf("Ошибка генерации PDF для партнёрского счёта %d: %v", inv.ID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка генерации PDF"})
+		return
+	}
+
+	filename := fmt.Sprintf("invoice_%d.pdf", inv.ID)
+	c.Header("Content-Type", "application/pdf")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
+	c.Data(http.StatusOK, "application/pdf", pdfBytes)
+}

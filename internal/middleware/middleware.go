@@ -64,6 +64,7 @@ func Auth() gin.HandlerFunc {
 		c.Set("isAdmin", claims.IsAdmin)
 		c.Set("role", claims.Role)
 		c.Set("dealerAccountID", claims.DealerAccountID)
+		c.Set("partnerAccountID", claims.PartnerAccountID)
 		c.Set("token", tokenString)
 		c.Next()
 	}
@@ -88,6 +89,23 @@ func DealerContext() gin.HandlerFunc {
 	}
 }
 
+// PartnerContext добавляет partner_account_id в контекст для фильтрации данных партнёра
+func PartnerContext() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		role, _ := c.Get("role")
+		partnerAccountID, _ := c.Get("partnerAccountID")
+
+		if role == "partner" && partnerAccountID != nil {
+			c.Set("filterByPartner", true)
+			c.Set("partnerWialonID", partnerAccountID)
+		} else {
+			c.Set("filterByPartner", false)
+		}
+
+		c.Next()
+	}
+}
+
 // RequireAdmin проверяет, что пользователь — администратор
 func RequireAdmin() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -100,6 +118,20 @@ func RequireAdmin() gin.HandlerFunc {
 				})
 				return
 			}
+		}
+		c.Next()
+	}
+}
+
+// RequirePartner проверяет, что пользователь — партнёр
+func RequirePartner() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		role, exists := c.Get("role")
+		if !exists || role != "partner" {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error": "Доступ запрещён. Требуются права партнёра.",
+			})
+			return
 		}
 		c.Next()
 	}

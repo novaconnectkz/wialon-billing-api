@@ -659,3 +659,77 @@ func (r *Repository) DeleteDailyCharges(accountID uint, from, to time.Time) erro
 		accountID, from, to).
 		Delete(&models.DailyCharge{}).Error
 }
+
+// === Partner Portal ===
+
+// GetAccountByBuyerEmail находит аккаунт по buyer_email
+func (r *Repository) GetAccountByBuyerEmail(email string) (*models.Account, error) {
+	var account models.Account
+	if err := r.db.Where("LOWER(buyer_email) = LOWER(?)", email).
+		Preload("Modules.Module").First(&account).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &account, nil
+}
+
+// GetAccountByWialonID находит аккаунт по Wialon ID
+func (r *Repository) GetAccountByWialonID(wialonID int64) (*models.Account, error) {
+	var account models.Account
+	if err := r.db.Where("wialon_id = ?", wialonID).
+		Preload("Modules.Module").First(&account).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &account, nil
+}
+
+// GetInvoicesByWialonID возвращает счета аккаунта по Wialon ID
+func (r *Repository) GetInvoicesByWialonID(wialonID int64) ([]models.Invoice, error) {
+	var invoices []models.Invoice
+	if err := r.db.Joins("JOIN accounts ON accounts.id = invoices.account_id").
+		Where("accounts.wialon_id = ?", wialonID).
+		Preload("Account").Preload("Lines").
+		Order("invoices.created_at DESC").
+		Find(&invoices).Error; err != nil {
+		return nil, err
+	}
+	return invoices, nil
+}
+
+// GetDailyChargesByWialonID возвращает начисления аккаунта по Wialon ID за месяц
+func (r *Repository) GetDailyChargesByWialonID(wialonID int64, year, month int) ([]models.DailyCharge, error) {
+	startOfMonth := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
+	endOfMonth := startOfMonth.AddDate(0, 1, 0)
+
+	var charges []models.DailyCharge
+	if err := r.db.Joins("JOIN accounts ON accounts.id = daily_charges.account_id").
+		Where("accounts.wialon_id = ? AND daily_charges.charge_date >= ? AND daily_charges.charge_date < ?",
+			wialonID, startOfMonth, endOfMonth).
+		Order("daily_charges.charge_date ASC, daily_charges.module_name ASC").
+		Find(&charges).Error; err != nil {
+		return nil, err
+	}
+	return charges, nil
+}
+
+// GetSnapshotsByWialonID возвращает снимки аккаунта по Wialon ID за месяц
+func (r *Repository) GetSnapshotsByWialonID(wialonID int64, year, month int) ([]models.Snapshot, error) {
+	startOfMonth := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
+	endOfMonth := startOfMonth.AddDate(0, 1, 0)
+
+	var snapshots []models.Snapshot
+	if err := r.db.Joins("JOIN accounts ON accounts.id = snapshots.account_id").
+		Where("accounts.wialon_id = ? AND snapshots.snapshot_date >= ? AND snapshots.snapshot_date < ?",
+			wialonID, startOfMonth, endOfMonth).
+		Order("snapshots.snapshot_date ASC").
+		Preload("Account").
+		Find(&snapshots).Error; err != nil {
+		return nil, err
+	}
+	return snapshots, nil
+}

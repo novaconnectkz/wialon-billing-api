@@ -9,8 +9,9 @@ type User struct {
 	ID              uint      `gorm:"primaryKey" json:"id"`
 	Email           string    `gorm:"uniqueIndex;size:255;not null" json:"email"`
 	IsAdmin         bool      `gorm:"default:false" json:"is_admin"`
-	Role            string    `gorm:"size:20;default:'admin'" json:"role"` // admin, dealer, viewer
-	DealerAccountID *int64    `json:"dealer_account_id"`                   // WialonID привязанного дилерского аккаунта
+	Role              string    `gorm:"size:20;default:'admin'" json:"role"` // admin, dealer, partner, viewer
+	DealerAccountID   *int64    `json:"dealer_account_id"`                   // WialonID привязанного дилерского аккаунта
+	PartnerAccountID  *int64    `json:"partner_account_id"`                  // WialonID привязанного партнёрского аккаунта
 	CreatedAt       time.Time `gorm:"autoCreateTime" json:"created_at"`
 }
 

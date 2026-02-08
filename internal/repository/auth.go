@@ -38,6 +38,11 @@ func (r *Repository) CreateUser(user *models.User) error {
 	return r.db.Create(user).Error
 }
 
+// UpdateUser обновляет данные пользователя
+func (r *Repository) UpdateUser(user *models.User) error {
+	return r.db.Save(user).Error
+}
+
 // === OTP Codes ===
 
 // CreateOTPCode создаёт новый OTP код

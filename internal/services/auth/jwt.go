@@ -14,11 +14,12 @@ var jwtSecret = []byte("wialon-billing-secret-key-change-in-production")
 
 // JWTClaims - claims для JWT токена
 type JWTClaims struct {
-	UserID          uint   `json:"user_id"`
-	Email           string `json:"email"`
-	IsAdmin         bool   `json:"is_admin"`
-	Role            string `json:"role"`
-	DealerAccountID *int64 `json:"dealer_account_id,omitempty"`
+	UserID           uint   `json:"user_id"`
+	Email            string `json:"email"`
+	IsAdmin          bool   `json:"is_admin"`
+	Role             string `json:"role"`
+	DealerAccountID  *int64 `json:"dealer_account_id,omitempty"`
+	PartnerAccountID *int64 `json:"partner_account_id,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -32,13 +33,14 @@ func GenerateOTPCode() string {
 }
 
 // GenerateJWT генерирует JWT токен
-func GenerateJWT(userID uint, email string, isAdmin bool, role string, dealerAccountID *int64) (string, error) {
+func GenerateJWT(userID uint, email string, isAdmin bool, role string, dealerAccountID *int64, partnerAccountID *int64) (string, error) {
 	claims := JWTClaims{
-		UserID:          userID,
-		Email:           email,
-		IsAdmin:         isAdmin,
-		Role:            role,
-		DealerAccountID: dealerAccountID,
+		UserID:           userID,
+		Email:            email,
+		IsAdmin:          isAdmin,
+		Role:             role,
+		DealerAccountID:  dealerAccountID,
+		PartnerAccountID: partnerAccountID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

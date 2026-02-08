@@ -230,6 +230,21 @@ func main() {
 				aiAdmin.POST("/fleet-analysis", aiHandler.AnalyzeFleetTrends)
 			}
 		}
+
+		// Wialon OAuth авторизация для партнёров
+		api.POST("/auth/wialon-login", authHandler.WialonLogin)
+
+		// Партнёрский портал
+		partner := api.Group("/partner")
+		partner.Use(middleware.Auth(), middleware.PartnerContext(), middleware.RequirePartner())
+		{
+			partner.GET("/account", h.GetPartnerAccount)
+			partner.GET("/invoices", h.GetPartnerInvoices)
+			partner.GET("/invoices/:id/pdf", h.GetPartnerInvoicePDF)
+			partner.GET("/charges", h.GetPartnerCharges)
+			partner.GET("/balance", h.GetPartnerBalance)
+			partner.GET("/snapshots", h.GetPartnerSnapshots)
+		}
 	}
 
 	// Запуск сервера
