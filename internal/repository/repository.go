@@ -28,6 +28,11 @@ func NewPostgresDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
 		return nil, err
 	}
 
+	// Удаление дублей перед AutoMigrate (для unique index на snapshots)
+	db.Exec(`DELETE FROM snapshots WHERE id NOT IN (
+		SELECT MAX(id) FROM snapshots GROUP BY account_id, snapshot_date
+	)`)
+
 	// Автомиграция моделей
 	if err := db.AutoMigrate(
 		&models.User{},
@@ -43,6 +48,8 @@ func NewPostgresDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
 		&models.Snapshot{},
 		&models.SnapshotUnit{},
 		&models.Change{},
+		// Детализация начислений
+		&models.DailyCharge{},
 		// AI Analytics
 		&models.AISettings{},
 		&models.AIUsageLog{},
@@ -141,8 +148,8 @@ func (r *Repository) GetSnapshotsByDealer(dealerWialonID int64, year, month int)
 	// Получаем снимки только для аккаунта дилера
 	if err := r.db.Joins("JOIN accounts ON accounts.id = snapshots.account_id").
 		Where("accounts.wialon_id = ?", dealerWialonID).
-		Where("snapshots.created_at >= ? AND snapshots.created_at < ?", startOfMonth, endOfMonth).
-		Order("snapshots.created_at DESC").
+		Where("snapshots.snapshot_date >= ? AND snapshots.snapshot_date < ?", startOfMonth, endOfMonth).
+		Order("snapshots.snapshot_date DESC").
 		Preload("Account").
 		Find(&snapshots).Error; err != nil {
 		return nil, err
@@ -156,7 +163,7 @@ func (r *Repository) GetSnapshotsByDealerAll(dealerWialonID int64, limit int) ([
 
 	if err := r.db.Joins("JOIN accounts ON accounts.id = snapshots.account_id").
 		Where("accounts.wialon_id = ?", dealerWialonID).
-		Order("snapshots.created_at DESC").
+		Order("snapshots.snapshot_date DESC").
 		Limit(limit).
 		Preload("Account").
 		Find(&snapshots).Error; err != nil {
@@ -240,15 +247,63 @@ func (r *Repository) SaveExchangeRate(rate *models.ExchangeRate) error {
 	return r.db.Create(rate).Error
 }
 
+// GetExchangeRateByDate возвращает курс валюты за конкретную дату
+func (r *Repository) GetExchangeRateByDate(currencyFrom string, date time.Time) (*models.ExchangeRate, error) {
+	var rate models.ExchangeRate
+	dateOnly := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, time.UTC)
+	if err := r.db.Where("currency_from = ? AND rate_date = ?", currencyFrom, dateOnly).
+		First(&rate).Error; err != nil {
+		return nil, err
+	}
+	return &rate, nil
+}
+
 // === Snapshots ===
 
-// GetSnapshots возвращает снимки
+// GetSnapshots возвращает снимки (legacy, для обратной совместимости)
 func (r *Repository) GetSnapshots(limit int) ([]models.Snapshot, error) {
 	var snapshots []models.Snapshot
-	if err := r.db.Order("created_at DESC").Limit(limit).Preload("Account").Find(&snapshots).Error; err != nil {
+	if err := r.db.Order("snapshot_date DESC").Limit(limit).Preload("Account").Find(&snapshots).Error; err != nil {
 		return nil, err
 	}
 	return snapshots, nil
+}
+
+// GetSnapshotsPaginated возвращает снимки с серверной пагинацией и фильтрами
+func (r *Repository) GetSnapshotsPaginated(page, pageSize int, from, to *time.Time, accountID *uint) ([]models.Snapshot, int64, error) {
+	var snapshots []models.Snapshot
+	var total int64
+
+	query := r.db.Model(&models.Snapshot{})
+
+	// Фильтр по периоду
+	if from != nil {
+		query = query.Where("snapshot_date >= ?", *from)
+	}
+	if to != nil {
+		query = query.Where("snapshot_date <= ?", *to)
+	}
+
+	// Фильтр по аккаунту
+	if accountID != nil {
+		query = query.Where("account_id = ?", *accountID)
+	}
+
+	// Считаем общее количество
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// Получаем записи с offset/limit
+	offset := (page - 1) * pageSize
+	if err := query.Order("snapshot_date DESC, account_id ASC").
+		Offset(offset).Limit(pageSize).
+		Preload("Account").
+		Find(&snapshots).Error; err != nil {
+		return nil, 0, err
+	}
+
+	return snapshots, total, nil
 }
 
 // GetSnapshotsByPeriod возвращает снимки за указанный месяц и год
@@ -259,8 +314,8 @@ func (r *Repository) GetSnapshotsByPeriod(year, month int) ([]models.Snapshot, e
 	startOfMonth := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
 	endOfMonth := startOfMonth.AddDate(0, 1, 0)
 
-	if err := r.db.Where("created_at >= ? AND created_at < ?", startOfMonth, endOfMonth).
-		Order("created_at DESC").Preload("Account").Find(&snapshots).Error; err != nil {
+	if err := r.db.Where("snapshot_date >= ? AND snapshot_date < ?", startOfMonth, endOfMonth).
+		Order("snapshot_date DESC").Preload("Account").Find(&snapshots).Error; err != nil {
 		return nil, err
 	}
 	return snapshots, nil
@@ -269,6 +324,19 @@ func (r *Repository) GetSnapshotsByPeriod(year, month int) ([]models.Snapshot, e
 // CreateSnapshot создаёт снимок
 func (r *Repository) CreateSnapshot(snapshot *models.Snapshot) error {
 	return r.db.Create(snapshot).Error
+}
+
+// UpsertSnapshot создаёт снимок или обновляет существующий (для пересчёта диапазонов)
+func (r *Repository) UpsertSnapshot(snapshot *models.Snapshot) error {
+	return r.db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{
+			{Name: "account_id"},
+			{Name: "snapshot_date"},
+		},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"total_units", "units_created", "units_deleted", "units_deactivated",
+		}),
+	}).Create(snapshot).Error
 }
 
 // CreateSnapshotUnit создаёт запись объекта в снимке
@@ -293,6 +361,9 @@ func (r *Repository) GetLastSnapshot(accountID uint) (*models.Snapshot, error) {
 func (r *Repository) ClearAllSnapshots() (int64, error) {
 	// Сначала удаляем SnapshotUnits
 	r.db.Exec("DELETE FROM snapshot_units")
+
+	// Удаляем DailyCharges
+	r.db.Exec("DELETE FROM daily_charges")
 
 	// Удаляем Changes
 	r.db.Exec("DELETE FROM changes")
@@ -391,12 +462,12 @@ func (r *Repository) ClearAllInvoices() (int64, error) {
 
 // GetSnapshotsByAccountAndPeriod возвращает снимки аккаунта за месяц
 func (r *Repository) GetSnapshotsByAccountAndPeriod(accountID uint, year, month int) ([]models.Snapshot, error) {
-	startOfMonth := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.Local)
+	startOfMonth := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
 	endOfMonth := startOfMonth.AddDate(0, 1, 0)
 
 	var snapshots []models.Snapshot
-	if err := r.db.Where("account_id = ? AND created_at >= ? AND created_at < ?",
-		accountID, startOfMonth, endOfMonth).Find(&snapshots).Error; err != nil {
+	if err := r.db.Where("account_id = ? AND snapshot_date >= ? AND snapshot_date < ?",
+		accountID, startOfMonth, endOfMonth).Order("snapshot_date ASC").Find(&snapshots).Error; err != nil {
 		return nil, err
 	}
 	return snapshots, nil
@@ -545,4 +616,46 @@ func (r *Repository) GetSnapshotForDate(accountID uint, date time.Time) (*models
 func (r *Repository) CleanupExpiredAIInsights() (int64, error) {
 	result := r.db.Where("expires_at < ?", time.Now()).Delete(&models.AIInsight{})
 	return result.RowsAffected, result.Error
+}
+
+// === Daily Charges (Детализация начислений) ===
+
+// SaveDailyCharges сохраняет ежедневные начисления (upsert по уникальному ключу)
+func (r *Repository) SaveDailyCharges(charges []models.DailyCharge) error {
+	if len(charges) == 0 {
+		return nil
+	}
+	return r.db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{
+			{Name: "account_id"},
+			{Name: "charge_date"},
+			{Name: "module_id"},
+		},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"snapshot_id", "total_units", "module_name", "pricing_type",
+			"unit_price", "days_in_month", "daily_cost", "currency",
+		}),
+	}).Create(&charges).Error
+}
+
+// GetDailyCharges возвращает начисления аккаунта за месяц
+func (r *Repository) GetDailyCharges(accountID uint, year, month int) ([]models.DailyCharge, error) {
+	startOfMonth := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
+	endOfMonth := startOfMonth.AddDate(0, 1, 0)
+
+	var charges []models.DailyCharge
+	if err := r.db.Where("account_id = ? AND charge_date >= ? AND charge_date < ?",
+		accountID, startOfMonth, endOfMonth).
+		Order("charge_date ASC, module_name ASC").
+		Find(&charges).Error; err != nil {
+		return nil, err
+	}
+	return charges, nil
+}
+
+// DeleteDailyCharges удаляет начисления аккаунта за период (для пересчёта)
+func (r *Repository) DeleteDailyCharges(accountID uint, from, to time.Time) error {
+	return r.db.Where("account_id = ? AND charge_date >= ? AND charge_date < ?",
+		accountID, from, to).
+		Delete(&models.DailyCharge{}).Error
 }

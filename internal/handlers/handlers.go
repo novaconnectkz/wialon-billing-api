@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"bytes"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,6 +18,7 @@ import (
 	"github.com/user/wialon-billing-api/internal/services/nbk"
 	"github.com/user/wialon-billing-api/internal/services/snapshot"
 	"github.com/user/wialon-billing-api/internal/services/wialon"
+	"github.com/xuri/excelize/v2"
 )
 
 // Handler - обработчики HTTP-запросов
@@ -710,7 +713,7 @@ func (h *Handler) GetDashboard(c *gin.Context) {
 	// Группируем снимки по дате и считаем сумму объектов за каждый день
 	dailyTotals := make(map[string]int)
 	for _, s := range snapshots {
-		dateKey := s.CreatedAt.Format("2006-01-02")
+		dateKey := s.SnapshotDate.Format("2006-01-02")
 		dailyTotals[dateKey] += s.TotalUnits
 	}
 
@@ -770,31 +773,51 @@ func (h *Handler) GetDashboard(c *gin.Context) {
 
 // === Snapshots ===
 
-// GetSnapshots возвращает список снимков
+// GetSnapshots возвращает список снимков с серверной пагинацией
 func (h *Handler) GetSnapshots(c *gin.Context) {
-	var snapshots []models.Snapshot
-	var err error
-
-	// Проверяем, является ли пользователь дилером
-	filterByDealer, _ := c.Get("filterByDealer")
-	dealerWialonID, _ := c.Get("dealerWialonID")
-
-	if filterByDealer == true && dealerWialonID != nil {
-		// Для дилера — только его снимки (за все время)
-		// dealerWialonID это *int64, нужно разыменовать
-		wialonID := *dealerWialonID.(*int64)
-		snapshots, err = h.repo.GetSnapshotsByDealerAll(wialonID, 500)
-	} else {
-		// Для админа — все снимки
-		snapshots, err = h.repo.GetSnapshots(100)
+	// Параметры пагинации
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 5000 {
+		pageSize = 20
 	}
 
+	// Фильтр по дате
+	var from, to *time.Time
+	if fromStr := c.Query("from"); fromStr != "" {
+		if t, err := time.Parse("2006-01-02", fromStr); err == nil {
+			from = &t
+		}
+	}
+	if toStr := c.Query("to"); toStr != "" {
+		if t, err := time.Parse("2006-01-02", toStr); err == nil {
+			to = &t
+		}
+	}
+	// Фильтр по аккаунту
+	var accountID *uint
+	if accStr := c.Query("account_id"); accStr != "" {
+		if id, err := strconv.ParseUint(accStr, 10, 32); err == nil {
+			aid := uint(id)
+			accountID = &aid
+		}
+	}
+
+	snapshots, total, err := h.repo.GetSnapshotsPaginated(page, pageSize, from, to, accountID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, snapshots)
+	c.JSON(http.StatusOK, gin.H{
+		"data":      snapshots,
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+	})
 }
 
 // CreateSnapshot создаёт ручной снимок
@@ -1072,8 +1095,9 @@ func (h *Handler) GetInvoicePDF(c *gin.Context) {
 // GenerateInvoices генерирует счета за указанный период
 func (h *Handler) GenerateInvoices(c *gin.Context) {
 	var req struct {
-		Year  int `json:"year"`
-		Month int `json:"month"`
+		Year      int   `json:"year"`
+		Month     int   `json:"month"`
+		AccountID *uint `json:"account_id,omitempty"` // опционально: для одного аккаунта
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1086,6 +1110,31 @@ func (h *Handler) GenerateInvoices(c *gin.Context) {
 
 	period := time.Date(req.Year, time.Month(req.Month), 1, 0, 0, 0, 0, time.Local)
 
+	// Если указан конкретный аккаунт — генерируем только для него
+	if req.AccountID != nil && *req.AccountID > 0 {
+		inv, err := h.invoice.GenerateInvoiceForSingleAccount(*req.AccountID, period)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		count := 0
+		var invoices []models.Invoice
+		if inv != nil {
+			count = 1
+			invoices = append(invoices, *inv)
+		}
+
+		c.JSON(http.StatusCreated, gin.H{
+			"message":  "Счёт сгенерирован",
+			"count":    count,
+			"period":   period.Format("01.2006"),
+			"invoices": invoices,
+		})
+		return
+	}
+
+	// Генерация для всех аккаунтов
 	invoices, err := h.invoice.GenerateMonthlyInvoices(period)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1299,4 +1348,429 @@ func (h *Handler) SetCurrencyBulk(c *gin.Context) {
 		"message": "Валюта установлена",
 		"updated": updated,
 	})
+}
+
+// === Детализация начислений ===
+
+// GetAccountCharges возвращает детализацию ежедневных начислений для аккаунта
+func (h *Handler) GetAccountCharges(c *gin.Context) {
+	idStr := c.Param("id")
+	accountID, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный ID"})
+		return
+	}
+
+	// Парсим период
+	now := time.Now()
+	year := now.Year()
+	month := int(now.Month())
+
+	if yearStr := c.Query("year"); yearStr != "" {
+		if y, err := strconv.Atoi(yearStr); err == nil && y > 2000 && y < 2100 {
+			year = y
+		}
+	}
+	if monthStr := c.Query("month"); monthStr != "" {
+		if m, err := strconv.Atoi(monthStr); err == nil && m >= 1 && m <= 12 {
+			month = m
+		}
+	}
+
+	// Пересчитываем начисления (на случай если ещё не рассчитаны)
+	if err := h.snapshot.CalculateDailyChargesForPeriod(uint(accountID), year, month); err != nil {
+		log.Printf("GetAccountCharges: ошибка пересчёта: %v", err)
+	}
+
+	// Получаем начисления из БД
+	charges, err := h.repo.GetDailyCharges(uint(accountID), year, month)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Получаем аккаунт
+	account, err := h.repo.GetAccountByID(uint(accountID))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Аккаунт не найден"})
+		return
+	}
+
+	// Группируем по дням
+	type DayCharges struct {
+		Date               string               `json:"date"`
+		TotalUnits         int                  `json:"total_units"`
+		Charges            []models.DailyCharge `json:"charges"`
+		DayTotalByCurrency map[string]float64   `json:"day_total_by_currency"`
+		DayCostLocal       float64              `json:"day_cost_local,omitempty"`
+		LocalCurrency      string               `json:"local_currency,omitempty"`
+	}
+
+	dayMap := make(map[string]*DayCharges)
+	var dayOrder []string
+
+	// Итоги по модулям
+	type ModuleSummary struct {
+		ModuleID     uint    `json:"module_id"`
+		ModuleName   string  `json:"module_name"`
+		PricingType  string  `json:"pricing_type"`
+		UnitPrice    float64 `json:"unit_price"`
+		TotalCost    float64 `json:"total_cost"`
+		Currency     string  `json:"currency"`
+		DaysCount    int     `json:"days_count"`
+		DaysInMonth  int     `json:"days_in_month"`
+		TotalUnits   int     `json:"total_units"`
+		AvgUnits     float64 `json:"avg_units"`
+		AvgDailyCost float64 `json:"avg_daily_cost"` // средняя стоимость за день
+	}
+	moduleTotals := make(map[uint]*ModuleSummary)
+	costByCurrency := make(map[string]float64)
+
+	for _, ch := range charges {
+		dateKey := ch.ChargeDate.Format("2006-01-02")
+
+		day, exists := dayMap[dateKey]
+		if !exists {
+			day = &DayCharges{
+				Date:               dateKey,
+				TotalUnits:         ch.TotalUnits,
+				DayTotalByCurrency: make(map[string]float64),
+			}
+			dayMap[dateKey] = day
+			dayOrder = append(dayOrder, dateKey)
+		}
+		day.Charges = append(day.Charges, ch)
+		day.DayTotalByCurrency[ch.Currency] += math.Round(ch.DailyCost*100) / 100
+
+		// Итоги по модулям
+		mt, ok := moduleTotals[ch.ModuleID]
+		if !ok {
+			mt = &ModuleSummary{
+				ModuleID:    ch.ModuleID,
+				ModuleName:  ch.ModuleName,
+				PricingType: ch.PricingType,
+				UnitPrice:   ch.UnitPrice,
+				Currency:    ch.Currency,
+				DaysInMonth: ch.DaysInMonth,
+			}
+			moduleTotals[ch.ModuleID] = mt
+		}
+		mt.TotalCost += ch.DailyCost
+		mt.TotalUnits += ch.TotalUnits
+		mt.DaysCount++
+		costByCurrency[ch.Currency] += ch.DailyCost
+	}
+
+	// Округляем итоги
+	for k, v := range costByCurrency {
+		costByCurrency[k] = math.Round(v*100) / 100
+	}
+	var moduleSummaries []ModuleSummary
+	for _, mt := range moduleTotals {
+		mt.TotalCost = math.Round(mt.TotalCost*100) / 100
+		if mt.DaysCount > 0 {
+			mt.AvgUnits = math.Round(float64(mt.TotalUnits)/float64(mt.DaysCount)*10) / 10
+			mt.AvgDailyCost = math.Round(mt.TotalCost/float64(mt.DaysCount)*100) / 100
+		}
+		moduleSummaries = append(moduleSummaries, *mt)
+	}
+
+	// Собираем ответ в порядке дат
+	var dailyBreakdown []DayCharges
+	for _, dateKey := range dayOrder {
+		dailyBreakdown = append(dailyBreakdown, *dayMap[dateKey])
+	}
+
+	daysInMonth := time.Date(year, time.Month(month)+1, 0, 0, 0, 0, 0, time.UTC).Day()
+
+	// Конвертация в валюту аккаунта (только для завершённых месяцев)
+	// Формула-эталон 1С: round(avg_units) × round(eur_price × rate, 2) = sum_kzt
+	var conversion gin.H
+	nowTime := time.Now()
+	reportEndDate := time.Date(year, time.Month(month)+1, 1, 0, 0, 0, 0, time.UTC)
+	isMonthClosed := nowTime.After(reportEndDate) || nowTime.Equal(reportEndDate)
+	billingCurrency := "KZT"
+	if account != nil && account.BillingCurrency != "" {
+		billingCurrency = account.BillingCurrency
+	}
+
+	if isMonthClosed && billingCurrency != "EUR" {
+		rateDate := reportEndDate
+		exchangeRate, err := h.repo.GetExchangeRateByDate("EUR", rateDate)
+		if err == nil && exchangeRate != nil {
+			rate := exchangeRate.Rate
+
+			// Считаем KZT-итог по формуле 1С: для каждого модуля отдельно
+			var totalKZT float64
+			type ConvertedDetail struct {
+				ModuleName   string  `json:"module_name"`
+				Quantity     float64 `json:"quantity"`
+				UnitPriceKZT float64 `json:"unit_price_kzt"`
+				TotalKZT     float64 `json:"total_kzt"`
+			}
+			var convertedDetails []ConvertedDetail
+
+			for _, ms := range moduleSummaries {
+				qty := math.Round(ms.AvgUnits) // целое кол-во, как в 1С
+				if ms.PricingType == "fixed" {
+					qty = 1
+				}
+				priceKZT := math.Round(ms.UnitPrice*rate*100) / 100 // цена за единицу в KZT
+				sumKZT := math.Round(qty*priceKZT*100) / 100        // Кол-во × Цена = Сумма
+				totalKZT += sumKZT
+
+				convertedDetails = append(convertedDetails, ConvertedDetail{
+					ModuleName:   ms.ModuleName,
+					Quantity:     qty,
+					UnitPriceKZT: priceKZT,
+					TotalKZT:     sumKZT,
+				})
+			}
+
+			convertedTotals := map[string]float64{
+				billingCurrency: math.Round(totalKZT*100) / 100,
+			}
+
+			// Ежедневные KZT-значения: распределяем totalKZT по дням равномерно
+			if len(dailyBreakdown) > 0 {
+				baseDailyKZT := math.Floor(totalKZT/float64(daysInMonth)*100) / 100
+				distributedSum := baseDailyKZT * float64(len(dailyBreakdown)-1)
+				lastDayKZT := math.Round((totalKZT-distributedSum)*100) / 100
+
+				for i := range dailyBreakdown {
+					if i < len(dailyBreakdown)-1 {
+						dailyBreakdown[i].DayCostLocal = baseDailyKZT
+					} else {
+						dailyBreakdown[i].DayCostLocal = lastDayKZT
+					}
+					dailyBreakdown[i].LocalCurrency = billingCurrency
+				}
+			}
+
+			conversion = gin.H{
+				"rate":              rate,
+				"rate_date":         rateDate.Format("2006-01-02"),
+				"billing_currency":  billingCurrency,
+				"converted_totals":  convertedTotals,
+				"converted_details": convertedDetails,
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"account": gin.H{
+			"id":        account.ID,
+			"name":      account.Name,
+			"wialon_id": account.WialonID,
+		},
+		"period": gin.H{
+			"year":          year,
+			"month":         month,
+			"days_in_month": daysInMonth,
+		},
+		"daily_breakdown": dailyBreakdown,
+		"monthly_totals": gin.H{
+			"cost_by_currency": costByCurrency,
+			"cost_details":     moduleSummaries,
+		},
+		"conversion": conversion,
+	})
+}
+
+// ExportAccountChargesExcel экспортирует детализацию начислений в Excel
+func (h *Handler) ExportAccountChargesExcel(c *gin.Context) {
+	idStr := c.Param("id")
+	accountID, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный ID"})
+		return
+	}
+
+	// Парсим период
+	now := time.Now()
+	year := now.Year()
+	month := int(now.Month())
+
+	if yearStr := c.Query("year"); yearStr != "" {
+		if y, err := strconv.Atoi(yearStr); err == nil {
+			year = y
+		}
+	}
+	if monthStr := c.Query("month"); monthStr != "" {
+		if m, err := strconv.Atoi(monthStr); err == nil {
+			month = m
+		}
+	}
+
+	// Пересчитываем
+	h.snapshot.CalculateDailyChargesForPeriod(uint(accountID), year, month)
+
+	charges, err := h.repo.GetDailyCharges(uint(accountID), year, month)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	account, _ := h.repo.GetAccountByID(uint(accountID))
+	accountName := "Аккаунт"
+	if account != nil {
+		accountName = account.Name
+	}
+
+	// Создаём Excel
+	f := excelize.NewFile()
+	sheet := "Детализация"
+	f.SetSheetName("Sheet1", sheet)
+
+	// Заголовок
+	monthNames := []string{"", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+		"Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"}
+	title := fmt.Sprintf("Детализация начислений: %s — %s %d", accountName, monthNames[month], year)
+	f.SetCellValue(sheet, "A1", title)
+
+	// Шапка таблицы
+	headers := []string{"Дата", "Объектов", "Модуль", "Тип", "Цена", "Стоимость/день", "Валюта"}
+	for i, h := range headers {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 3)
+		f.SetCellValue(sheet, cell, h)
+	}
+
+	// Стиль заголовка
+	headerStyle, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Bold: true},
+		Fill:      excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"#E2EFDA"}},
+		Alignment: &excelize.Alignment{Horizontal: "center"},
+	})
+	f.SetCellStyle(sheet, "A3", "G3", headerStyle)
+
+	// Данные
+	row := 4
+	totalByCurrency := make(map[string]float64)
+	for _, ch := range charges {
+		f.SetCellValue(sheet, fmt.Sprintf("A%d", row), ch.ChargeDate.Format("02.01.2006"))
+		f.SetCellValue(sheet, fmt.Sprintf("B%d", row), ch.TotalUnits)
+		f.SetCellValue(sheet, fmt.Sprintf("C%d", row), ch.ModuleName)
+		pricingLabel := "за объект"
+		if ch.PricingType == "fixed" {
+			pricingLabel = "фиксир."
+		}
+		f.SetCellValue(sheet, fmt.Sprintf("D%d", row), pricingLabel)
+		f.SetCellValue(sheet, fmt.Sprintf("E%d", row), ch.UnitPrice)
+		cost := math.Round(ch.DailyCost*100) / 100
+		f.SetCellValue(sheet, fmt.Sprintf("F%d", row), cost)
+		f.SetCellValue(sheet, fmt.Sprintf("G%d", row), ch.Currency)
+		totalByCurrency[ch.Currency] += ch.DailyCost
+		row++
+	}
+
+	// Итоговая строка
+	row++ // пустая строка-разделитель
+	totalStyle, _ := f.NewStyle(&excelize.Style{
+		Font: &excelize.Font{Bold: true, Size: 11},
+		Fill: excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"#E2EFDA"}},
+	})
+	i := 0
+	for currency, total := range totalByCurrency {
+		f.SetCellValue(sheet, fmt.Sprintf("D%d", row+i), "ИТОГО:")
+		f.SetCellValue(sheet, fmt.Sprintf("F%d", row+i), math.Round(total*100)/100)
+		f.SetCellValue(sheet, fmt.Sprintf("G%d", row+i), currency)
+		f.SetCellStyle(sheet, fmt.Sprintf("D%d", row+i), fmt.Sprintf("G%d", row+i), totalStyle)
+		i++
+	}
+
+	// Конвертация в валюту аккаунта — формула-эталон 1С
+	nowTime := time.Now()
+	reportEndDate := time.Date(year, time.Month(month)+1, 1, 0, 0, 0, 0, time.UTC)
+	isMonthClosed := nowTime.After(reportEndDate) || nowTime.Equal(reportEndDate)
+	billingCurrency := "KZT"
+	if account != nil && account.BillingCurrency != "" {
+		billingCurrency = account.BillingCurrency
+	}
+
+	if isMonthClosed && billingCurrency != "EUR" {
+		rateDate := reportEndDate
+		exchangeRate, err := h.repo.GetExchangeRateByDate("EUR", rateDate)
+		if err == nil && exchangeRate != nil {
+			rate := exchangeRate.Rate
+
+			// Агрегация по модулям для формулы 1С
+			type excelModule struct {
+				ModuleID    uint
+				UnitPrice   float64
+				PricingType string
+				TotalUnits  int
+				DaysCount   int
+			}
+			excelModules := make(map[uint]*excelModule)
+
+			for _, ch := range charges {
+				em, ok := excelModules[ch.ModuleID]
+				if !ok {
+					em = &excelModule{
+						ModuleID:    ch.ModuleID,
+						UnitPrice:   ch.UnitPrice,
+						PricingType: ch.PricingType,
+					}
+					excelModules[ch.ModuleID] = em
+				}
+				em.TotalUnits += ch.TotalUnits
+				em.DaysCount++
+			}
+
+			// Считаем KZT-итог по формуле 1С
+			var totalKZT float64
+			for _, em := range excelModules {
+				qty := math.Round(float64(em.TotalUnits) / float64(em.DaysCount))
+				if em.PricingType == "fixed" {
+					qty = 1
+				}
+				priceKZT := math.Round(em.UnitPrice*rate*100) / 100
+				sumKZT := math.Round(qty*priceKZT*100) / 100
+				totalKZT += sumKZT
+			}
+			totalKZT = math.Round(totalKZT*100) / 100
+
+			row = row + i + 1 // пустая разделительная строка
+
+			convertStyle, _ := f.NewStyle(&excelize.Style{
+				Font: &excelize.Font{Bold: true, Size: 11, Color: "#1F4E79"},
+				Fill: excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"#DAEEF3"}},
+			})
+
+			// Заголовок конвертации
+			f.SetCellValue(sheet, fmt.Sprintf("A%d", row), fmt.Sprintf("Курс EUR/%s на %s:", billingCurrency, rateDate.Format("02.01.2006")))
+			f.SetCellValue(sheet, fmt.Sprintf("F%d", row), rate)
+			f.SetCellStyle(sheet, fmt.Sprintf("A%d", row), fmt.Sprintf("G%d", row), convertStyle)
+			row++
+
+			// Итого в валюте аккаунта
+			f.SetCellValue(sheet, fmt.Sprintf("D%d", row), fmt.Sprintf("ИТОГО (%s):", billingCurrency))
+			f.SetCellValue(sheet, fmt.Sprintf("F%d", row), totalKZT)
+			f.SetCellValue(sheet, fmt.Sprintf("G%d", row), billingCurrency)
+			f.SetCellStyle(sheet, fmt.Sprintf("D%d", row), fmt.Sprintf("G%d", row), convertStyle)
+		} else {
+			log.Printf("ExportAccountChargesExcel: курс EUR/%s на %s не найден: %v", billingCurrency, rateDate.Format("2006-01-02"), err)
+		}
+	}
+
+	// Автоширина колонок
+	f.SetColWidth(sheet, "A", "A", 14)
+	f.SetColWidth(sheet, "B", "B", 12)
+	f.SetColWidth(sheet, "C", "C", 25)
+	f.SetColWidth(sheet, "D", "D", 18)
+	f.SetColWidth(sheet, "E", "E", 12)
+	f.SetColWidth(sheet, "F", "F", 18)
+	f.SetColWidth(sheet, "G", "G", 10)
+
+	// Записываем в буфер
+	var buf bytes.Buffer
+	if err := f.Write(&buf); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка генерации Excel"})
+		return
+	}
+
+	filename := fmt.Sprintf("charges_%s_%d-%02d.xlsx", accountName, year, month)
+	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
+	c.Data(http.StatusOK, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buf.Bytes())
 }

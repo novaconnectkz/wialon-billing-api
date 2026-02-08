@@ -40,7 +40,7 @@ func main() {
 	wialonClient := wialon.NewClient(cfg.Wialon)
 	snapshotService := snapshot.NewService(repo, wialonClient)
 	nbkService := nbk.NewService(repo)
-	invoiceService := invoice.NewService(db, repo)
+	invoiceService := invoice.NewService(db, repo, nbkService)
 
 	// Инициализация AI сервиса
 	aiService := ai.NewService(repo)
@@ -80,6 +80,16 @@ func main() {
 			log.Printf("Ошибка загрузки курсов при старте: %v", err)
 		}
 	}()
+
+	// Генерация счетов — 1-го числа каждого месяца в 03:00 UTC
+	// Если курсы НБК недоступны — повторяем каждый час
+	_, err = c.AddFunc("0 3 1 * *", func() {
+		log.Println("[Счета] Запуск автоматической генерации счетов...")
+		go generateInvoicesWithRetry(invoiceService, nbkService)
+	})
+	if err != nil {
+		log.Fatalf("Ошибка добавления cron-задачи счетов: %v", err)
+	}
 
 	c.Start()
 	defer c.Stop()
@@ -125,6 +135,8 @@ func main() {
 			accounts.GET("/selected", h.GetSelectedAccounts)
 			accounts.GET("/:id/history", h.GetAccountHistory)
 			accounts.GET("/:id/stats", h.GetAccountStats)
+			accounts.GET("/:id/charges", h.GetAccountCharges)
+			accounts.GET("/:id/charges/excel", h.ExportAccountChargesExcel)
 		}
 
 		// Учётные записи (только для админов)
@@ -229,5 +241,46 @@ func main() {
 	if err := router.Run(":" + port); err != nil {
 		log.Fatalf("Ошибка запуска сервера: %v", err)
 		os.Exit(1)
+	}
+}
+
+// generateInvoicesWithRetry генерирует счета с повтором при отсутствии курсов НБК
+func generateInvoicesWithRetry(invoiceService *invoice.Service, nbkService *nbk.Service) {
+	now := time.Now()
+	// Период — предыдущий месяц
+	prevMonth := now.AddDate(0, -1, 0)
+	period := time.Date(prevMonth.Year(), prevMonth.Month(), 1, 0, 0, 0, 0, time.Local)
+	// Дата курса — 1-е число текущего месяца (следующий после периода)
+	rateDate := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+
+	for attempt := 1; attempt <= 24; attempt++ {
+		// Пробуем загрузить курсы
+		nbkService.FetchExchangeRatesForDate(rateDate)
+
+		if invoiceService.CheckRatesAvailable(rateDate) {
+			log.Printf("[Счета] Курсы за %s доступны, генерируем счета (попытка %d)...",
+				rateDate.Format("02.01.2006"), attempt)
+
+			invoices, err := invoiceService.GenerateMonthlyInvoices(period)
+			if err != nil {
+				log.Printf("[Счета] Ошибка генерации: %v", err)
+			} else {
+				log.Printf("[Счета] Успешно сгенерировано %d счетов за %s",
+					len(invoices), period.Format("01.2006"))
+			}
+			return
+		}
+
+		log.Printf("[Счета] Курсы за %s ещё недоступны, повтор через 1 час (попытка %d/24)...",
+			rateDate.Format("02.01.2006"), attempt)
+		time.Sleep(1 * time.Hour)
+	}
+
+	log.Println("[Счета] Курсы не появились за 24 часа. Генерация без конвертации...")
+	invoices, err := invoiceService.GenerateMonthlyInvoices(period)
+	if err != nil {
+		log.Printf("[Счета] Ошибка генерации: %v", err)
+	} else {
+		log.Printf("[Счета] Сгенерировано %d счетов (без курсов)", len(invoices))
 	}
 }

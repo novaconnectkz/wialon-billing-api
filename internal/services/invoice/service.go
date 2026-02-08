@@ -1,40 +1,41 @@
 package invoice
 
 import (
+	"fmt"
 	"log"
+	"math"
 	"time"
 
 	"github.com/user/wialon-billing-api/internal/models"
+	"github.com/user/wialon-billing-api/internal/repository"
+	"github.com/user/wialon-billing-api/internal/services/nbk"
 	"gorm.io/gorm"
 )
-
-// Repository - интерфейс для работы с БД
-type Repository interface {
-	GetSelectedAccounts() ([]models.Account, error)
-	GetAccountModules(accountID uint) ([]models.AccountModule, error)
-	GetSnapshotsByAccountAndPeriod(accountID uint, year, month int) ([]models.Snapshot, error)
-	CreateInvoice(invoice *models.Invoice) error
-	CreateInvoiceLine(line *models.InvoiceLine) error
-	GetInvoiceByAccountAndPeriod(accountID uint, period time.Time) (*models.Invoice, error)
-	DeleteInvoice(invoiceID uint) error
-	DeleteInvoiceLines(invoiceID uint) error
-}
 
 // Service - сервис для работы со счетами
 type Service struct {
 	db   *gorm.DB
-	repo Repository
+	repo *repository.Repository
+	nbk  *nbk.Service
 }
 
 // NewService создаёт новый сервис
-func NewService(db *gorm.DB, repo Repository) *Service {
-	return &Service{db: db, repo: repo}
+func NewService(db *gorm.DB, repo *repository.Repository, nbkService *nbk.Service) *Service {
+	return &Service{db: db, repo: repo, nbk: nbkService}
 }
 
 // GenerateMonthlyInvoices генерирует счета за указанный месяц для всех аккаунтов
 func (s *Service) GenerateMonthlyInvoices(period time.Time) ([]models.Invoice, error) {
 	// Нормализуем период до 1-го числа месяца
 	period = time.Date(period.Year(), period.Month(), 1, 0, 0, 0, 0, time.Local)
+
+	// Дата курса — 1-е число следующего месяца
+	rateDate := period.AddDate(0, 1, 0)
+
+	// Загружаем курсы НБК за дату выставления счёта
+	if err := s.nbk.FetchExchangeRatesForDate(rateDate); err != nil {
+		log.Printf("Предупреждение: ошибка загрузки курсов за %s: %v", rateDate.Format("02.01.2006"), err)
+	}
 
 	// Получаем все аккаунты с включённым биллингом
 	accounts, err := s.repo.GetSelectedAccounts()
@@ -45,7 +46,7 @@ func (s *Service) GenerateMonthlyInvoices(period time.Time) ([]models.Invoice, e
 	var invoices []models.Invoice
 
 	for _, account := range accounts {
-		invoice, err := s.generateInvoiceForAccount(account, period)
+		invoice, err := s.generateInvoiceForAccount(account, period, rateDate)
 		if err != nil {
 			log.Printf("Ошибка генерации счёта для %s: %v", account.Name, err)
 			continue
@@ -59,8 +60,36 @@ func (s *Service) GenerateMonthlyInvoices(period time.Time) ([]models.Invoice, e
 	return invoices, nil
 }
 
+// GenerateInvoiceForSingleAccount генерирует счёт для одного аккаунта
+func (s *Service) GenerateInvoiceForSingleAccount(accountID uint, period time.Time) (*models.Invoice, error) {
+	period = time.Date(period.Year(), period.Month(), 1, 0, 0, 0, 0, time.Local)
+	rateDate := period.AddDate(0, 1, 0)
+
+	// Загружаем курсы
+	if err := s.nbk.FetchExchangeRatesForDate(rateDate); err != nil {
+		log.Printf("Предупреждение: ошибка загрузки курсов за %s: %v", rateDate.Format("02.01.2006"), err)
+	}
+
+	var account models.Account
+	if err := s.db.Preload("Modules.Module").First(&account, accountID).Error; err != nil {
+		return nil, fmt.Errorf("аккаунт %d не найден: %w", accountID, err)
+	}
+
+	return s.generateInvoiceForAccount(account, period, rateDate)
+}
+
+// CheckRatesAvailable проверяет наличие курсов за указанную дату
+func (s *Service) CheckRatesAvailable(date time.Time) bool {
+	// Проверяем наличие курса EUR за дату
+	rate, err := s.repo.GetExchangeRateByDate("EUR", date)
+	if err != nil || rate == nil {
+		return false
+	}
+	return true
+}
+
 // generateInvoiceForAccount создаёт счёт для одного аккаунта
-func (s *Service) generateInvoiceForAccount(account models.Account, period time.Time) (*models.Invoice, error) {
+func (s *Service) generateInvoiceForAccount(account models.Account, period, rateDate time.Time) (*models.Invoice, error) {
 	// Получаем модули аккаунта
 	accountModules, err := s.repo.GetAccountModules(account.ID)
 	if err != nil {
@@ -79,6 +108,12 @@ func (s *Service) generateInvoiceForAccount(account models.Account, period time.
 		avgUnits = 0
 	}
 
+	// Определяем целевую валюту аккаунта
+	targetCurrency := account.BillingCurrency
+	if targetCurrency == "" {
+		targetCurrency = "KZT"
+	}
+
 	// Проверяем, есть ли уже счёт за этот период
 	existingInvoice, _ := s.repo.GetInvoiceByAccountAndPeriod(account.ID, period)
 	if existingInvoice != nil {
@@ -94,37 +129,60 @@ func (s *Service) generateInvoiceForAccount(account models.Account, period time.
 
 	// Рассчитываем стоимость по каждому модулю
 	var totalAmount float64
-	var currency string
 	var lines []models.InvoiceLine
 
 	for _, am := range accountModules {
 		module := am.Module
 
 		var quantity float64
+		var unitPrice float64
 		var totalPrice float64
 
 		if module.PricingType == "fixed" {
 			// Фиксированная цена
 			quantity = 1
-			totalPrice = module.Price
+			unitPrice = module.Price
+
+			// Конвертируем цену в валюту аккаунта
+			if module.Currency != targetCurrency {
+				converted, err := s.convertCurrency(unitPrice, module.Currency, targetCurrency, rateDate)
+				if err != nil {
+					log.Printf("Ошибка конвертации %s→%s для модуля %s: %v", module.Currency, targetCurrency, module.Name, err)
+				} else {
+					unitPrice = math.Round(converted*100) / 100
+				}
+			}
+			totalPrice = unitPrice
 		} else {
-			// per_unit — цена за объект
-			quantity = avgUnits
-			totalPrice = avgUnits * module.Price
+			// per_unit — формула 1С: цену → KZT, потом × кол-во
+			quantity = math.Round(avgUnits) // целое число, как в 1С
+			unitPrice = module.Price
+
+			// Сначала конвертируем цену ЗА ЕДИНИЦУ в валюту аккаунта
+			if module.Currency != targetCurrency {
+				converted, err := s.convertCurrency(unitPrice, module.Currency, targetCurrency, rateDate)
+				if err != nil {
+					log.Printf("Ошибка конвертации %s→%s для модуля %s: %v", module.Currency, targetCurrency, module.Name, err)
+				} else {
+					unitPrice = math.Round(converted*100) / 100 // round(eur_price × rate, 2)
+				}
+			}
+
+			// Потом: Кол-во × Цена_KZT = Сумма (как в 1С)
+			totalPrice = math.Round(quantity*unitPrice*100) / 100
 		}
 
 		line := models.InvoiceLine{
 			ModuleID:    module.ID,
 			ModuleName:  module.Name,
 			Quantity:    quantity,
-			UnitPrice:   module.Price,
+			UnitPrice:   unitPrice,
 			TotalPrice:  totalPrice,
-			Currency:    module.Currency,
+			Currency:    targetCurrency,
 			PricingType: module.PricingType,
 		}
 		lines = append(lines, line)
 		totalAmount += totalPrice
-		currency = module.Currency // Берём валюту последнего модуля (TODO: валидация)
 	}
 
 	if totalAmount == 0 {
@@ -137,7 +195,7 @@ func (s *Service) generateInvoiceForAccount(account models.Account, period time.
 		AccountID:   account.ID,
 		Period:      period,
 		TotalAmount: totalAmount,
-		Currency:    currency,
+		Currency:    targetCurrency,
 		Status:      "draft",
 	}
 
@@ -154,9 +212,42 @@ func (s *Service) generateInvoiceForAccount(account models.Account, period time.
 	}
 
 	invoice.Lines = lines
-	log.Printf("Создан счёт #%d для %s: %.2f %s", invoice.ID, account.Name, totalAmount, currency)
+	log.Printf("Создан счёт #%d для %s: %.2f %s", invoice.ID, account.Name, totalAmount, targetCurrency)
 
 	return invoice, nil
+}
+
+// convertCurrency конвертирует сумму из одной валюты в другую через KZT
+func (s *Service) convertCurrency(amount float64, from, to string, date time.Time) (float64, error) {
+	if from == to {
+		return amount, nil
+	}
+
+	// Получаем сумму в KZT
+	var amountInKZT float64
+
+	if from == "KZT" {
+		amountInKZT = amount
+	} else {
+		// Получаем курс from → KZT
+		rate, err := s.repo.GetExchangeRateByDate(from, date)
+		if err != nil {
+			return 0, fmt.Errorf("курс %s за %s не найден: %w", from, date.Format("02.01.2006"), err)
+		}
+		amountInKZT = amount * rate.Rate
+	}
+
+	// Конвертируем KZT → to
+	if to == "KZT" {
+		return amountInKZT, nil
+	}
+
+	rateToTarget, err := s.repo.GetExchangeRateByDate(to, date)
+	if err != nil {
+		return 0, fmt.Errorf("курс %s за %s не найден: %w", to, date.Format("02.01.2006"), err)
+	}
+
+	return amountInKZT / rateToTarget.Rate, nil
 }
 
 // calculateAverageUnits рассчитывает среднее количество объектов за месяц
@@ -190,9 +281,10 @@ func (s *Service) RecalculateCurrentPeriod(accountID uint) (*models.Invoice, err
 
 	// Получаем аккаунт
 	var account models.Account
-	if err := s.db.First(&account, accountID).Error; err != nil {
+	if err := s.db.Preload("Modules.Module").First(&account, accountID).Error; err != nil {
 		return nil, err
 	}
 
-	return s.generateInvoiceForAccount(account, period)
+	rateDate := period.AddDate(0, 1, 0)
+	return s.generateInvoiceForAccount(account, period, rateDate)
 }

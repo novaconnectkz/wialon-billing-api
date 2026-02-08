@@ -429,8 +429,8 @@ func (s *Service) createSnapshotsForConnectionRange(wialonClient *wialon.Client,
 				UnitsDeactivated: deactivatedByAccount[wid],
 			}
 
-			if err := s.repo.CreateSnapshot(snapshot); err != nil {
-				log.Printf("createSnapshotsForConnectionRange: ошибка создания снимка для %s за %s: %v",
+			if err := s.repo.UpsertSnapshot(snapshot); err != nil {
+				log.Printf("createSnapshotsForConnectionRange: ошибка upsert снимка для %s за %s: %v",
 					account.Name, dateKey, err)
 				continue
 			}
@@ -710,4 +710,115 @@ func (s *Service) createSnapshotsViaUnits(wialonClient *wialon.Client, accounts 
 	}
 
 	return snapshots, nil
+}
+
+// CalculateDailyCharges рассчитывает ежедневные начисления для снэпшота
+// per_unit: price × units / daysInMonth (ежедневно)
+// fixed: полная цена 1-го числа месяца (разово)
+func (s *Service) CalculateDailyCharges(snapshot *models.Snapshot, account *models.Account) error {
+	if account == nil || len(account.Modules) == 0 {
+		return nil
+	}
+
+	// Количество дней в месяце снэпшота
+	year := snapshot.SnapshotDate.Year()
+	month := snapshot.SnapshotDate.Month()
+	daysInMonth := time.Date(year, month+1, 0, 0, 0, 0, 0, time.UTC).Day()
+	dayOfMonth := snapshot.SnapshotDate.Day()
+
+	var charges []models.DailyCharge
+
+	for _, am := range account.Modules {
+		module := am.Module
+		if module.ID == 0 {
+			continue
+		}
+
+		if module.PricingType == "fixed" {
+			// Фиксированные пакеты начисляются разово 1-го числа
+			if dayOfMonth != 1 {
+				continue
+			}
+			charges = append(charges, models.DailyCharge{
+				AccountID:   account.ID,
+				SnapshotID:  snapshot.ID,
+				ModuleID:    module.ID,
+				ChargeDate:  snapshot.SnapshotDate,
+				TotalUnits:  snapshot.TotalUnits,
+				ModuleName:  module.Name,
+				PricingType: module.PricingType,
+				UnitPrice:   module.Price,
+				DaysInMonth: daysInMonth,
+				DailyCost:   module.Price, // полная стоимость за месяц
+				Currency:    module.Currency,
+			})
+		} else {
+			// per_unit: price × totalUnits / daysInMonth
+			dailyCost := module.Price * float64(snapshot.TotalUnits) / float64(daysInMonth)
+			charges = append(charges, models.DailyCharge{
+				AccountID:   account.ID,
+				SnapshotID:  snapshot.ID,
+				ModuleID:    module.ID,
+				ChargeDate:  snapshot.SnapshotDate,
+				TotalUnits:  snapshot.TotalUnits,
+				ModuleName:  module.Name,
+				PricingType: module.PricingType,
+				UnitPrice:   module.Price,
+				DaysInMonth: daysInMonth,
+				DailyCost:   dailyCost,
+				Currency:    module.Currency,
+			})
+		}
+	}
+
+	if len(charges) > 0 {
+		if err := s.repo.SaveDailyCharges(charges); err != nil {
+			log.Printf("CalculateDailyCharges: ошибка сохранения %d записей для аккаунта %d: %v",
+				len(charges), account.ID, err)
+			return err
+		}
+		log.Printf("CalculateDailyCharges: сохранено %d начислений для %s за %s",
+			len(charges), account.Name, snapshot.SnapshotDate.Format("2006-01-02"))
+	}
+
+	return nil
+}
+
+// CalculateDailyChargesForPeriod пересчитывает начисления для аккаунта за период
+func (s *Service) CalculateDailyChargesForPeriod(accountID uint, year, month int) error {
+	// Получаем аккаунт с модулями
+	account, err := s.repo.GetAccountByID(accountID)
+	if err != nil {
+		return err
+	}
+
+	// Загружаем модули
+	accountModules, err := s.repo.GetAccountModules(accountID)
+	if err != nil {
+		return err
+	}
+	account.Modules = accountModules
+
+	// Удаляем старые начисления за период перед пересчётом
+	startOfMonth := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
+	endOfMonth := startOfMonth.AddDate(0, 1, 0)
+	if err := s.repo.DeleteDailyCharges(accountID, startOfMonth, endOfMonth); err != nil {
+		log.Printf("CalculateDailyChargesForPeriod: ошибка очистки начислений: %v", err)
+	}
+
+	// Получаем снэпшоты за период
+	snapshots, err := s.repo.GetSnapshotsByAccountAndPeriod(accountID, year, month)
+	if err != nil {
+		return err
+	}
+
+	for _, snap := range snapshots {
+		if err := s.CalculateDailyCharges(&snap, account); err != nil {
+			log.Printf("CalculateDailyChargesForPeriod: ошибка для снэпшота %d: %v", snap.ID, err)
+		}
+	}
+
+	log.Printf("CalculateDailyChargesForPeriod: пересчитано %d снэпшотов для аккаунта %d за %d-%02d",
+		len(snapshots), accountID, year, month)
+	return nil
 }

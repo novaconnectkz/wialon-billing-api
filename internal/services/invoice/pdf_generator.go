@@ -3,6 +3,7 @@ package invoice
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/go-pdf/fpdf"
@@ -209,5 +210,30 @@ func (g *PDFGenerator) drawSignature(pdf *fpdf.Fpdf, settings *models.BillingSet
 }
 
 func formatMoney(amount float64) string {
-	return fmt.Sprintf("%.2f", amount)
+	// Форматируем с разделителем тысяч (пробел) и десятичной запятой
+	whole := int64(amount)
+	frac := int64(math.Round((amount - float64(whole)) * 100))
+	if frac < 0 {
+		frac = -frac
+	}
+
+	// Форматируем целую часть с пробелами
+	sign := ""
+	if whole < 0 {
+		sign = "-"
+		whole = -whole
+	}
+	str := fmt.Sprintf("%d", whole)
+	n := len(str)
+	if n > 3 {
+		var result []byte
+		for i, c := range str {
+			if i > 0 && (n-i)%3 == 0 {
+				result = append(result, ' ')
+			}
+			result = append(result, byte(c))
+		}
+		return fmt.Sprintf("%s%s,%02d", sign, string(result), frac)
+	}
+	return fmt.Sprintf("%s%s,%02d", sign, str, frac)
 }

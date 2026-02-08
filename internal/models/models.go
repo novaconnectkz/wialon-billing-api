@@ -122,8 +122,8 @@ type ExchangeRate struct {
 // Snapshot - снимок состояния
 type Snapshot struct {
 	ID               uint           `gorm:"primaryKey" json:"id"`
-	AccountID        uint           `gorm:"not null" json:"account_id"`
-	SnapshotDate     time.Time      `gorm:"type:date;not null" json:"snapshot_date"` // дата, за которую снимок
+	AccountID        uint           `gorm:"not null;uniqueIndex:idx_snapshot_unique" json:"account_id"`
+	SnapshotDate     time.Time      `gorm:"type:date;not null;uniqueIndex:idx_snapshot_unique" json:"snapshot_date"` // дата, за которую снимок
 	TotalUnits       int            `gorm:"not null" json:"total_units"`
 	UnitsCreated     int            `gorm:"default:0" json:"units_created"`     // добавлено объектов
 	UnitsDeleted     int            `gorm:"default:0" json:"units_deleted"`     // удалено объектов
@@ -154,6 +154,25 @@ type Change struct {
 	UnitName       string    `gorm:"size:255" json:"unit_name"`
 	ChangeType     string    `gorm:"size:10;not null" json:"change_type"` // "added" или "removed"
 	DetectedAt     time.Time `gorm:"autoCreateTime" json:"detected_at"`
+}
+
+// DailyCharge - ежедневное начисление по модулю для аккаунта
+type DailyCharge struct {
+	ID          uint      `gorm:"primaryKey" json:"id"`
+	AccountID   uint      `gorm:"not null;uniqueIndex:idx_daily_charge_unique" json:"account_id"`
+	SnapshotID  uint      `gorm:"not null" json:"snapshot_id"`
+	ModuleID    uint      `gorm:"not null;uniqueIndex:idx_daily_charge_unique" json:"module_id"`
+	ChargeDate  time.Time `gorm:"type:date;not null;uniqueIndex:idx_daily_charge_unique;index:idx_daily_charge_period" json:"charge_date"`
+	TotalUnits  int       `gorm:"not null" json:"total_units"`          // объектов на дату
+	ModuleName  string    `gorm:"size:255;not null" json:"module_name"` // зафиксированное название
+	PricingType string    `gorm:"size:20;not null" json:"pricing_type"` // per_unit или fixed
+	UnitPrice   float64   `gorm:"not null" json:"unit_price"`           // цена модуля
+	DaysInMonth int       `gorm:"not null" json:"days_in_month"`        // дней в месяце
+	DailyCost   float64   `gorm:"not null" json:"daily_cost"`           // стоимость за день
+	Currency    string    `gorm:"size:3;not null" json:"currency"`      // EUR, RUB, KZT
+	CreatedAt   time.Time `gorm:"autoCreateTime" json:"created_at"`
+	Account     Account   `gorm:"foreignKey:AccountID" json:"account,omitempty"`
+	Module      Module    `gorm:"foreignKey:ModuleID" json:"module,omitempty"`
 }
 
 // === AI Analytics ===
