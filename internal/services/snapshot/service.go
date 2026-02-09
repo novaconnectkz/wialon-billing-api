@@ -59,21 +59,29 @@ func resolveDeactivatedForDealers(wialonClient *wialon.Client, deactivatedByAcco
 	return result
 }
 
-// EnsureDailySnapshot — идемпотентная обёртка: создаёт снимок за вчерашний день,
-// только если его ещё нет. Безопасна для повторного вызова.
+// EnsureDailySnapshot — идемпотентная обёртка: создаёт снимки за вчерашний день,
+// только если их ещё нет. Безопасна для повторного вызова.
+// Использует CreateSnapshotsForDate (с Login и multi-connection поддержкой).
 func (s *Service) EnsureDailySnapshot() error {
 	yesterday := time.Now().UTC().AddDate(0, 0, -1)
-	exists, err := s.repo.HasSnapshotsForDate(yesterday)
+	snapshotDate := time.Date(yesterday.Year(), yesterday.Month(), yesterday.Day(), 0, 0, 0, 0, time.UTC)
+
+	exists, err := s.repo.HasSnapshotsForDate(snapshotDate)
 	if err != nil {
 		return err
 	}
 	if exists {
-		log.Printf("Снимки за %s уже существуют, пропускаем", yesterday.Format("2006-01-02"))
+		log.Printf("Снимки за %s уже существуют, пропускаем", snapshotDate.Format("2006-01-02"))
 		return nil
 	}
 
-	log.Printf("Снимков за %s нет, создаём...", yesterday.Format("2006-01-02"))
-	return s.CreateDailySnapshot()
+	log.Printf("Снимков за %s нет, создаём...", snapshotDate.Format("2006-01-02"))
+	snapshots, err := s.CreateSnapshotsForDate(snapshotDate)
+	if err != nil {
+		return err
+	}
+	log.Printf("EnsureDailySnapshot: создано %d снимков за %s", len(snapshots), snapshotDate.Format("2006-01-02"))
+	return nil
 }
 
 // CreateDailySnapshot создаёт ежедневный снимок для всех активных аккаунтов
