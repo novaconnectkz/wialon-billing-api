@@ -202,8 +202,8 @@ func (h *AIHandler) SendInsightFeedback(c *gin.Context) {
 
 // GetFleetTrends возвращает данные о трендах флота
 func (h *AIHandler) GetFleetTrends(c *gin.Context) {
-	// Период в днях (по умолчанию 30)
-	days := 30
+	// Период в днях (по умолчанию 7)
+	days := 7
 	if daysStr := c.Query("days"); daysStr != "" {
 		if d, err := strconv.Atoi(daysStr); err == nil && d > 0 && d <= 90 {
 			days = d
