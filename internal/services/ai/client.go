@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -184,17 +185,64 @@ type InsightResponse struct {
 	Severity        string  `json:"severity"`
 	Title           string  `json:"title"`
 	Description     string  `json:"description"`
+	Recommendation  string  `json:"recommendation"`
 	FinancialImpact float64 `json:"financial_impact"`
 	InsightType     string  `json:"insight_type"`
+	Delta           int     `json:"delta"`
+	DeltaPercent    float64 `json:"delta_percent"`
 }
 
 // ParseInsightResponse парсит JSON ответ от DeepSeek
+// DeepSeek R1 может возвращать JSON в маркдаун-блоке (```json ... ```) или среди текста
 func ParseInsightResponse(response string) (*InsightResponse, error) {
-	var insight InsightResponse
-	if err := json.Unmarshal([]byte(response), &insight); err != nil {
-		return nil, fmt.Errorf("ошибка парсинга ответа AI: %w", err)
+	if response == "" {
+		return nil, fmt.Errorf("ошибка парсинга ответа AI: пустой ответ")
 	}
 
+	var insight InsightResponse
+
+	// Попытка 1: прямой JSON
+	if err := json.Unmarshal([]byte(response), &insight); err == nil {
+		return validateInsight(&insight), nil
+	}
+
+	// Попытка 2: извлечь JSON из маркдаун-блока ```json ... ```
+	if idx := strings.Index(response, "```json"); idx != -1 {
+		start := idx + 7 // длина "```json"
+		if end := strings.Index(response[start:], "```"); end != -1 {
+			jsonStr := strings.TrimSpace(response[start : start+end])
+			if err := json.Unmarshal([]byte(jsonStr), &insight); err == nil {
+				return validateInsight(&insight), nil
+			}
+		}
+	}
+
+	// Попытка 3: извлечь JSON из ``` ... ```
+	if idx := strings.Index(response, "```"); idx != -1 {
+		start := idx + 3
+		if end := strings.Index(response[start:], "```"); end != -1 {
+			jsonStr := strings.TrimSpace(response[start : start+end])
+			if err := json.Unmarshal([]byte(jsonStr), &insight); err == nil {
+				return validateInsight(&insight), nil
+			}
+		}
+	}
+
+	// Попытка 4: найти первый { ... } блок в тексте
+	if idx := strings.Index(response, "{"); idx != -1 {
+		if end := strings.LastIndex(response, "}"); end > idx {
+			jsonStr := response[idx : end+1]
+			if err := json.Unmarshal([]byte(jsonStr), &insight); err == nil {
+				return validateInsight(&insight), nil
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("ошибка парсинга ответа AI: JSON не найден в ответе")
+}
+
+// validateInsight проверяет и корректирует поля инсайта
+func validateInsight(insight *InsightResponse) *InsightResponse {
 	// Валидация severity
 	switch insight.Severity {
 	case "info", "warning", "critical":
@@ -211,5 +259,5 @@ func ParseInsightResponse(response string) (*InsightResponse, error) {
 		insight.InsightType = "financial_impact"
 	}
 
-	return &insight, nil
+	return insight
 }

@@ -76,7 +76,7 @@ func main() {
 		log.Fatalf("Ошибка добавления cron-задачи курсов: %v", err)
 	}
 
-	// Проверка снимков и курсов при запуске приложения
+	// Проверка снимков, курсов и AI анализ при запуске приложения
 	go func() {
 		log.Println("[Старт] Проверка курсов...")
 		if err := nbkService.FetchExchangeRates(); err != nil {
@@ -85,6 +85,13 @@ func main() {
 		log.Println("[Старт] Проверка снимков за вчера...")
 		if err := snapshotService.EnsureDailySnapshot(); err != nil {
 			log.Printf("[Старт] Ошибка создания снимка: %v", err)
+		}
+		// Запуск AI анализа аккаунтов при старте
+		log.Println("[Старт] Запуск AI анализа аккаунтов...")
+		if err := aiService.AnalyzeLatestSnapshots(context.Background()); err != nil {
+			log.Printf("[Старт] Ошибка AI анализа: %v", err)
+		} else {
+			log.Println("[Старт] AI анализ аккаунтов завершён")
 		}
 	}()
 
@@ -96,6 +103,17 @@ func main() {
 	})
 	if err != nil {
 		log.Fatalf("Ошибка добавления cron-задачи счетов: %v", err)
+	}
+
+	// AI анализ аккаунтов — ежедневно в 05:00 UTC (после завершения снимков)
+	_, err = c.AddFunc("0 5 * * *", func() {
+		log.Println("[AI Cron] Запуск ежедневного анализа аккаунтов...")
+		if err := aiService.AnalyzeLatestSnapshots(context.Background()); err != nil {
+			log.Printf("[AI Cron] Ошибка анализа: %v", err)
+		}
+	})
+	if err != nil {
+		log.Fatalf("Ошибка добавления cron-задачи AI анализа: %v", err)
 	}
 
 	c.Start()

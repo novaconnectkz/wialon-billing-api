@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,6 +12,16 @@ import (
 	"github.com/user/wialon-billing-api/internal/repository"
 	"golang.org/x/time/rate"
 )
+
+// escapeJSON экранирует строку для безопасной вставки в JSON
+func escapeJSON(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	s = strings.ReplaceAll(s, "\r", `\r`)
+	s = strings.ReplaceAll(s, "\t", `\t`)
+	return s
+}
 
 // Service - сервис AI аналитики (DeepSeek)
 type Service struct {
@@ -198,8 +209,8 @@ func (s *Service) AnalyzeAccount(ctx context.Context, account *models.Account, c
 		units30dAgo, currentSnapshot.TotalUnits-units30dAgo,
 	)
 
-	// Отправляем запрос к AI (используем модель для анализа - R1)
-	result, err := s.client.Generate(ctx, s.GetAnalysisModel(), AnalyticsSystemPrompt, userPrompt)
+	// Отправляем запрос к AI — используем V3 (chat) для стабильного JSON
+	result, err := s.client.Generate(ctx, s.GetSupportModel(), AnalyticsSystemPrompt, userPrompt)
 	if err != nil {
 		// Логируем ошибку
 		s.logUsage("analyze", 0, 0, 0, false, err.Error())
@@ -212,7 +223,14 @@ func (s *Service) AnalyzeAccount(ctx context.Context, account *models.Account, c
 	// Парсим ответ
 	insightResp, err := ParseInsightResponse(result.Response)
 	if err != nil {
-		return nil, err
+		// Фолбэк: пробуем reasoning_content (на случай если модель сменится)
+		if result.ReasoningContent != "" {
+			insightResp, err = ParseInsightResponse(result.ReasoningContent)
+		}
+		if err != nil {
+			log.Printf("[AI] Не удалось распарсить JSON для %s: %v", account.Name, err)
+			return nil, err
+		}
 	}
 
 	// Создаём инсайт
@@ -223,6 +241,14 @@ func (s *Service) AnalyzeAccount(ctx context.Context, account *models.Account, c
 	}
 	s.mu.RUnlock()
 
+	// Формируем metadata с дополнительными полями
+	metadataJSON := fmt.Sprintf(
+		`{"recommendation":"%s","delta":%d,"delta_percent":%.1f}`,
+		escapeJSON(insightResp.Recommendation),
+		insightResp.Delta,
+		insightResp.DeltaPercent,
+	)
+
 	insight := &models.AIInsight{
 		AccountID:       account.ID,
 		InsightType:     insightResp.InsightType,
@@ -231,6 +257,7 @@ func (s *Service) AnalyzeAccount(ctx context.Context, account *models.Account, c
 		Description:     insightResp.Description,
 		FinancialImpact: &insightResp.FinancialImpact,
 		Currency:        currency,
+		Metadata:        metadataJSON,
 		ExpiresAt:       time.Now().Add(time.Duration(cacheTTL) * time.Hour),
 	}
 
