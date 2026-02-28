@@ -428,15 +428,17 @@ func (s *Service) GetFleetTrends(days int) (*FleetAnalysisResult, error) {
 	}
 
 	now := time.Now()
-	startDate := now.AddDate(0, 0, -days)
+	// Нормализуем до начала сегодняшнего дня, чтобы не включать текущий день (снимков ещё нет)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	startDate := today.AddDate(0, 0, -days)
 
 	// Агрегируем данные по дням
 	dailyStats := make(map[string]*FleetTrendsData)
 	accountTrends := make(map[uint][]int) // история объектов по аккаунтам
 
 	for _, account := range accounts {
-		// Получаем все снимки за период
-		for d := 0; d <= days; d++ {
+		// Получаем все снимки за период (не включая сегодняшний день)
+		for d := 0; d < days; d++ {
 			date := startDate.AddDate(0, 0, d)
 			dateStr := date.Format("2006-01-02")
 
