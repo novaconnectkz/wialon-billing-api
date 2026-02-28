@@ -751,6 +751,14 @@ func (s *Service) CalculateDailyCharges(snapshot *models.Snapshot, account *mode
 	daysInMonth := time.Date(year, month+1, 0, 0, 0, 0, 0, time.UTC).Day()
 	dayOfMonth := snapshot.SnapshotDate.Day()
 
+	// Считаем только активные объекты (вычитаем деактивированные)
+	// TotalUnits в снапшоте = все объекты из Wialon CMS (включая деактивированные)
+	// Для начислений используем только активные
+	activeUnits := snapshot.TotalUnits - snapshot.UnitsDeactivated
+	if activeUnits < 0 {
+		activeUnits = 0
+	}
+
 	var charges []models.DailyCharge
 
 	for _, am := range account.Modules {
@@ -769,7 +777,7 @@ func (s *Service) CalculateDailyCharges(snapshot *models.Snapshot, account *mode
 				SnapshotID:  snapshot.ID,
 				ModuleID:    module.ID,
 				ChargeDate:  snapshot.SnapshotDate,
-				TotalUnits:  snapshot.TotalUnits,
+				TotalUnits:  activeUnits,
 				ModuleName:  module.Name,
 				PricingType: module.PricingType,
 				UnitPrice:   module.Price,
@@ -778,14 +786,14 @@ func (s *Service) CalculateDailyCharges(snapshot *models.Snapshot, account *mode
 				Currency:    module.Currency,
 			})
 		} else {
-			// per_unit: price × totalUnits / daysInMonth
-			dailyCost := module.Price * float64(snapshot.TotalUnits) / float64(daysInMonth)
+			// per_unit: price × activeUnits / daysInMonth
+			dailyCost := module.Price * float64(activeUnits) / float64(daysInMonth)
 			charges = append(charges, models.DailyCharge{
 				AccountID:   account.ID,
 				SnapshotID:  snapshot.ID,
 				ModuleID:    module.ID,
 				ChargeDate:  snapshot.SnapshotDate,
-				TotalUnits:  snapshot.TotalUnits,
+				TotalUnits:  activeUnits,
 				ModuleName:  module.Name,
 				PricingType: module.PricingType,
 				UnitPrice:   module.Price,
