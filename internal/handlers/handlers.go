@@ -710,11 +710,16 @@ func (h *Handler) GetDashboard(c *gin.Context) {
 
 	// settings больше не нужен — цены из модулей
 
-	// Группируем снимки по дате и считаем сумму объектов за каждый день
+	// Группируем снимки по дате и считаем сумму АКТИВНЫХ объектов за каждый день
 	dailyTotals := make(map[string]int)
 	for _, s := range snapshots {
 		dateKey := s.SnapshotDate.Format("2006-01-02")
-		dailyTotals[dateKey] += s.TotalUnits
+		// Считаем только активные объекты (без деактивированных)
+		activeUnits := s.TotalUnits - s.UnitsDeactivated
+		if activeUnits < 0 {
+			activeUnits = 0
+		}
+		dailyTotals[dateKey] += activeUnits
 	}
 
 	// Считаем количество дней в выбранном месяце
