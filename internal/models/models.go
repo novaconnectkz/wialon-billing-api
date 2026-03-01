@@ -97,6 +97,7 @@ type AccountModule struct {
 type Invoice struct {
 	ID          uint          `gorm:"primaryKey" json:"id"`
 	AccountID   uint          `gorm:"not null" json:"account_id"`
+	Number      string        `gorm:"size:100" json:"number"`                // номер счёта: {договор}/{порядковый}
 	Period      time.Time     `gorm:"type:date;not null" json:"period"`      // 1-е число месяца (за какой период)
 	TotalAmount float64       `gorm:"not null" json:"total_amount"`          // итоговая сумма
 	Currency    string        `gorm:"size:3;not null" json:"currency"`       // валюта

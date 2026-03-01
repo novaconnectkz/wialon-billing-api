@@ -148,16 +148,11 @@ func (h *Handler) UpdateAccountDetails(c *gin.Context) {
 	account.ContractNumber = req.ContractNumber
 
 	if req.ContractDate != nil && *req.ContractDate != "" {
-		log.Printf("[DEBUG] contract_date получен: '%s'", *req.ContractDate)
 		t, err := time.Parse("2006-01-02", *req.ContractDate)
 		if err == nil {
 			account.ContractDate = &t
-			log.Printf("[DEBUG] contract_date распарсен: %v", t)
-		} else {
-			log.Printf("[DEBUG] contract_date ошибка парсинга: %v", err)
 		}
 	} else {
-		log.Printf("[DEBUG] contract_date пустой или nil")
 		account.ContractDate = nil
 	}
 

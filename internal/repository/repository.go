@@ -467,6 +467,15 @@ func (r *Repository) DeleteInvoiceLines(invoiceID uint) error {
 	return r.db.Where("invoice_id = ?", invoiceID).Delete(&models.InvoiceLine{}).Error
 }
 
+// CountInvoicesByAccount возвращает количество счетов у аккаунта (для порядкового номера)
+func (r *Repository) CountInvoicesByAccount(accountID uint) (int64, error) {
+	var count int64
+	if err := r.db.Model(&models.Invoice{}).Where("account_id = ?", accountID).Count(&count).Error; err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 // ClearAllInvoices удаляет все счета и связанные строки
 func (r *Repository) ClearAllInvoices() (int64, error) {
 	// Сначала удаляем строки счетов

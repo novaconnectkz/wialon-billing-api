@@ -228,7 +228,12 @@ func (g *PDFGenerator) drawHeader(pdf *fpdf.Fpdf, invoice *models.Invoice, setti
 
 	// Заголовок
 	pdf.SetFont("Arial", "B", 14)
-	title := fmt.Sprintf("Счет на оплату № %d от %s", invoice.ID, formatDateRussian(invoice.CreatedAt))
+	// Номер счёта: если есть Number — используем его, иначе ID
+	invoiceNumber := invoice.Number
+	if invoiceNumber == "" {
+		invoiceNumber = fmt.Sprintf("%d", invoice.ID)
+	}
+	title := fmt.Sprintf("Счет на оплату № %s от %s", invoiceNumber, formatDateRussian(invoice.CreatedAt))
 	pdf.CellFormat(190, 10, title, "", 1, "L", false, 0, "")
 
 	// Нижняя тонкая линия-разделитель

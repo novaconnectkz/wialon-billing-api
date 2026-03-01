@@ -97,10 +97,16 @@ func formatPeriodRu(t time.Time) string {
 func (s *Service) SendInvoice(to string, invoice *models.Invoice, pdfData []byte) error {
 	periodStr := formatPeriodRu(invoice.Period)
 
+	// Номер счёта: если есть Number — используем его, иначе ID
+	invoiceNumber := invoice.Number
+	if invoiceNumber == "" {
+		invoiceNumber = fmt.Sprintf("%d", invoice.ID)
+	}
+
 	tmpl, err := s.repo.GetEmailTemplateByType("invoice")
 	if err != nil || tmpl == nil {
 		// Фоллбэк без шаблона
-		subject := fmt.Sprintf("Счёт на оплату за %s", periodStr)
+		subject := fmt.Sprintf("Счёт на оплату №%s за %s", invoiceNumber, periodStr)
 		body := fmt.Sprintf("<p>Во вложении счёт на оплату на сумму %.2f %s.</p>", invoice.TotalAmount, invoice.Currency)
 		attachment := Attachment{
 			Filename:    fmt.Sprintf("invoice_%s.pdf", invoice.Period.Format("2006_01")),
@@ -115,7 +121,7 @@ func (s *Service) SendInvoice(to string, invoice *models.Invoice, pdfData []byte
 		"period":         periodStr,
 		"amount":         fmt.Sprintf("%.2f", invoice.TotalAmount),
 		"currency":       invoice.Currency,
-		"invoice_number": fmt.Sprintf("%d", invoice.ID),
+		"invoice_number": invoiceNumber,
 	}
 
 	subject := renderTemplate(tmpl.Subject, vars)

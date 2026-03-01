@@ -192,6 +192,11 @@ func (s *Service) generateInvoiceForAccount(account models.Account, period, rate
 		return nil, nil
 	}
 
+	// Считаем порядковый номер счёта для аккаунта (до удаления старого)
+	seqNum, _ := s.repo.CountInvoicesByAccount(account.ID)
+	// +1 т.к. текущий ещё не создан, но старый уже удалён выше
+	seqNum++
+
 	// Создаём счёт
 	invoice := &models.Invoice{
 		AccountID:   account.ID,
@@ -199,6 +204,13 @@ func (s *Service) generateInvoiceForAccount(account models.Account, period, rate
 		TotalAmount: totalAmount,
 		Currency:    targetCurrency,
 		Status:      "draft",
+	}
+
+	// Формируем номер: {номер_договора}/{порядковый_номер}
+	if account.ContractNumber != "" {
+		invoice.Number = fmt.Sprintf("%s/%d", account.ContractNumber, seqNum)
+	} else {
+		invoice.Number = fmt.Sprintf("%d", seqNum)
 	}
 
 	if err := s.repo.CreateInvoice(invoice); err != nil {
@@ -214,7 +226,7 @@ func (s *Service) generateInvoiceForAccount(account models.Account, period, rate
 	}
 
 	invoice.Lines = lines
-	log.Printf("Создан счёт #%d для %s: %.2f %s", invoice.ID, account.Name, totalAmount, targetCurrency)
+	log.Printf("Создан счёт %s для %s: %.2f %s", invoice.Number, account.Name, totalAmount, targetCurrency)
 
 	return invoice, nil
 }
