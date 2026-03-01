@@ -234,6 +234,7 @@ func main() {
 			invoices.GET("", h.GetInvoices)
 			invoices.GET("/:id", h.GetInvoice)
 			invoices.GET("/:id/pdf", h.GetInvoicePDF)
+			invoices.GET("/:id/excel", h.GetInvoiceExcel)
 			invoices.POST("/generate", h.GenerateInvoices)
 			invoices.PUT("/:id/status", h.UpdateInvoiceStatus)
 			invoices.DELETE("/clear", h.ClearAllInvoices)

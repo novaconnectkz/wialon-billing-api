@@ -102,6 +102,7 @@ type Invoice struct {
 	TotalAmount float64       `gorm:"not null" json:"total_amount"`          // итоговая сумма
 	Currency    string        `gorm:"size:3;not null" json:"currency"`       // валюта
 	Status      string        `gorm:"size:20;default:'draft'" json:"status"` // "draft", "sent", "paid", "overdue"
+	ExcelReport []byte        `gorm:"type:bytea" json:"-"`                   // предгенерированный Excel-отчёт
 	CreatedAt   time.Time     `gorm:"autoCreateTime" json:"created_at"`
 	SentAt      *time.Time    `json:"sent_at,omitempty"` // когда отправлен
 	PaidAt      *time.Time    `json:"paid_at,omitempty"` // когда оплачен

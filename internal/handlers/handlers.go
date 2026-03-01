@@ -1125,6 +1125,47 @@ func (h *Handler) GetInvoicePDF(c *gin.Context) {
 	c.Data(http.StatusOK, "application/pdf", pdfBytes)
 }
 
+// GetInvoiceExcel возвращает Excel-отчёт начислений привязанный к счёту
+func (h *Handler) GetInvoiceExcel(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный ID"})
+		return
+	}
+
+	inv, err := h.repo.GetInvoiceByID(uint(id))
+	if err != nil || inv == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Счёт не найден"})
+		return
+	}
+
+	excelData := inv.ExcelReport
+	// Если Excel не был предгенерирован — генерируем на лету
+	if len(excelData) == 0 {
+		year := inv.Period.Year()
+		month := int(inv.Period.Month())
+		data, err := GenerateChargesExcelBytes(h.repo, inv.AccountID, year, month)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка генерации Excel"})
+			return
+		}
+		excelData = data
+		// Сохраняем для будущих запросов
+		inv.ExcelReport = excelData
+		h.repo.UpdateInvoice(inv)
+	}
+
+	invoiceNum := inv.Number
+	if invoiceNum == "" {
+		invoiceNum = fmt.Sprintf("%d", inv.ID)
+	}
+	filename := fmt.Sprintf("charges_%s.xlsx", strings.ReplaceAll(invoiceNum, "/", "_"))
+	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
+	c.Data(http.StatusOK, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", excelData)
+}
+
 // GenerateInvoices генерирует счета за указанный период
 func (h *Handler) GenerateInvoices(c *gin.Context) {
 	var req struct {
@@ -1154,6 +1195,8 @@ func (h *Handler) GenerateInvoices(c *gin.Context) {
 		count := 0
 		var invoices []models.Invoice
 		if inv != nil {
+			// Генерируем Excel-отчёт и сохраняем в счёт
+			h.attachExcelToInvoice(inv)
 			count = 1
 			invoices = append(invoices, *inv)
 		}
@@ -1174,12 +1217,32 @@ func (h *Handler) GenerateInvoices(c *gin.Context) {
 		return
 	}
 
+	// Генерируем Excel-отчёты для всех счетов
+	for i := range invoices {
+		h.attachExcelToInvoice(&invoices[i])
+	}
+
 	c.JSON(http.StatusCreated, gin.H{
 		"message":  "Счета сгенерированы",
 		"count":    len(invoices),
 		"period":   period.Format("01.2006"),
 		"invoices": invoices,
 	})
+}
+
+// attachExcelToInvoice генерирует Excel-отчёт и сохраняет в счёт
+func (h *Handler) attachExcelToInvoice(inv *models.Invoice) {
+	year := inv.Period.Year()
+	month := int(inv.Period.Month())
+	excelData, err := GenerateChargesExcelBytes(h.repo, inv.AccountID, year, month)
+	if err != nil {
+		log.Printf("[INVOICE] Ошибка генерации Excel для счёта %s: %v", inv.Number, err)
+		return
+	}
+	inv.ExcelReport = excelData
+	if err := h.repo.UpdateInvoice(inv); err != nil {
+		log.Printf("[INVOICE] Ошибка сохранения Excel для счёта %s: %v", inv.Number, err)
+	}
 }
 
 // UpdateInvoiceStatus обновляет статус счёта

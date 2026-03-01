@@ -275,14 +275,21 @@ func (h *SMTPHandler) SendInvoiceEmail(c *gin.Context) {
 		return
 	}
 
-	// Генерируем Excel-отчёт начислений за период счёта
+	// Берём предгенерированный Excel-отчёт из счёта
 	var extraAttachments []email.Attachment
-	year := inv.Period.Year()
-	month := int(inv.Period.Month())
-	excelData, err := GenerateChargesExcelBytes(h.repo, inv.AccountID, year, month)
-	if err != nil {
-		log.Printf("[EMAIL] Ошибка генерации Excel для счёта %d: %v (продолжаем без Excel)", id, err)
-	} else {
+	excelData := inv.ExcelReport
+	if len(excelData) == 0 {
+		// Fallback: генерируем на лету, если не был предгенерирован
+		year := inv.Period.Year()
+		month := int(inv.Period.Month())
+		data, err := GenerateChargesExcelBytes(h.repo, inv.AccountID, year, month)
+		if err != nil {
+			log.Printf("[EMAIL] Ошибка генерации Excel для счёта %d: %v (продолжаем без Excel)", id, err)
+		} else {
+			excelData = data
+		}
+	}
+	if len(excelData) > 0 {
 		invoiceNumber := inv.Number
 		if invoiceNumber == "" {
 			invoiceNumber = fmt.Sprintf("%d", inv.ID)
