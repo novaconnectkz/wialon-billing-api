@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"log"
@@ -51,6 +52,8 @@ func (h *SMTPHandler) GetSMTPSettings(c *gin.Context) {
 			"from_name":    "",
 			"use_tls":      true,
 			"has_password": false,
+			"copy_email":   "",
+			"copy_enabled": false,
 		})
 		return
 	}
@@ -65,6 +68,8 @@ func (h *SMTPHandler) GetSMTPSettings(c *gin.Context) {
 		"from_name":    settings.FromName,
 		"use_tls":      settings.UseTLS,
 		"has_password": settings.EncryptedPassword != "",
+		"copy_email":   settings.CopyEmail,
+		"copy_enabled": settings.CopyEnabled,
 		"updated_at":   settings.UpdatedAt,
 	})
 }
@@ -72,14 +77,16 @@ func (h *SMTPHandler) GetSMTPSettings(c *gin.Context) {
 // UpdateSMTPSettings сохраняет настройки SMTP
 func (h *SMTPHandler) UpdateSMTPSettings(c *gin.Context) {
 	var req struct {
-		Enabled   bool   `json:"enabled"`
-		Host      string `json:"host"`
-		Port      int    `json:"port"`
-		Username  string `json:"username"`
-		Password  string `json:"password"` // Новый пароль (если передан)
-		FromEmail string `json:"from_email"`
-		FromName  string `json:"from_name"`
-		UseTLS    bool   `json:"use_tls"`
+		Enabled     bool   `json:"enabled"`
+		Host        string `json:"host"`
+		Port        int    `json:"port"`
+		Username    string `json:"username"`
+		Password    string `json:"password"` // Новый пароль (если передан)
+		FromEmail   string `json:"from_email"`
+		FromName    string `json:"from_name"`
+		UseTLS      bool   `json:"use_tls"`
+		CopyEmail   string `json:"copy_email"`
+		CopyEnabled bool   `json:"copy_enabled"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -103,6 +110,8 @@ func (h *SMTPHandler) UpdateSMTPSettings(c *gin.Context) {
 	settings.FromEmail = req.FromEmail
 	settings.FromName = req.FromName
 	settings.UseTLS = req.UseTLS
+	settings.CopyEmail = req.CopyEmail
+	settings.CopyEnabled = req.CopyEnabled
 
 	// Шифруем пароль только если передан новый
 	if req.Password != "" {
@@ -266,10 +275,42 @@ func (h *SMTPHandler) SendInvoiceEmail(c *gin.Context) {
 		return
 	}
 
-	// Отправляем
-	if err := h.emailService.SendInvoice(inv.Account.BuyerEmail, inv, pdfData); err != nil {
+	// Генерируем Excel-отчёт начислений за период счёта
+	var extraAttachments []email.Attachment
+	year := inv.Period.Year()
+	month := int(inv.Period.Month())
+	excelData, err := GenerateChargesExcelBytes(h.repo, inv.AccountID, year, month)
+	if err != nil {
+		log.Printf("[EMAIL] Ошибка генерации Excel для счёта %d: %v (продолжаем без Excel)", id, err)
+	} else {
+		invoiceNumber := inv.Number
+		if invoiceNumber == "" {
+			invoiceNumber = fmt.Sprintf("%d", inv.ID)
+		}
+		excelFilename := fmt.Sprintf("charges_%s.xlsx", strings.ReplaceAll(invoiceNumber, "/", "_"))
+		extraAttachments = append(extraAttachments, email.Attachment{
+			Filename:    excelFilename,
+			ContentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+			Data:        excelData,
+		})
+	}
+
+	// Отправляем клиенту
+	if err := h.emailService.SendInvoice(inv.Account.BuyerEmail, inv, pdfData, extraAttachments...); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка отправки: " + err.Error()})
 		return
+	}
+
+	// Отправляем копию если включено
+	smtpSettings, _ := h.repo.GetSMTPSettings()
+	if smtpSettings != nil && smtpSettings.CopyEnabled && smtpSettings.CopyEmail != "" {
+		go func() {
+			if err := h.emailService.SendInvoice(smtpSettings.CopyEmail, inv, pdfData, extraAttachments...); err != nil {
+				log.Printf("[EMAIL] Ошибка отправки копии на %s: %v", smtpSettings.CopyEmail, err)
+			} else {
+				log.Printf("[EMAIL] Копия счёта отправлена на %s", smtpSettings.CopyEmail)
+			}
+		}()
 	}
 
 	// Обновляем статус счёта на 'sent'

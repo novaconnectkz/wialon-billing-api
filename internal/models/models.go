@@ -242,13 +242,15 @@ type AIInsight struct {
 type SMTPSettings struct {
 	ID                uint      `gorm:"primaryKey" json:"id"`
 	Enabled           bool      `gorm:"default:false" json:"enabled"`
-	Host              string    `gorm:"size:255" json:"host"`        // smtp.gmail.com
-	Port              int       `gorm:"default:587" json:"port"`     // 587 (TLS), 465 (SSL)
-	Username          string    `gorm:"size:255" json:"username"`    // логин
-	EncryptedPassword string    `gorm:"size:512" json:"-"`           // AES-256-GCM, не сериализуется
-	FromEmail         string    `gorm:"size:255" json:"from_email"`  // адрес отправителя
-	FromName          string    `gorm:"size:255" json:"from_name"`   // имя отправителя
-	UseTLS            bool      `gorm:"default:true" json:"use_tls"` // TLS/STARTTLS
+	Host              string    `gorm:"size:255" json:"host"`              // smtp.gmail.com
+	Port              int       `gorm:"default:587" json:"port"`           // 587 (TLS), 465 (SSL)
+	Username          string    `gorm:"size:255" json:"username"`          // логин
+	EncryptedPassword string    `gorm:"size:512" json:"-"`                 // AES-256-GCM, не сериализуется
+	FromEmail         string    `gorm:"size:255" json:"from_email"`        // адрес отправителя
+	FromName          string    `gorm:"size:255" json:"from_name"`         // имя отправителя
+	UseTLS            bool      `gorm:"default:true" json:"use_tls"`       // TLS/STARTTLS
+	CopyEmail         string    `gorm:"size:255" json:"copy_email"`        // адрес для копии
+	CopyEnabled       bool      `gorm:"default:false" json:"copy_enabled"` // отправлять копию
 	UpdatedAt         time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 }
 

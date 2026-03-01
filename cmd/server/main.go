@@ -383,7 +383,7 @@ func seedEmailTemplates(db *gorm.DB) {
 <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
 <p style="color: #999; font-size: 12px;">Это автоматическое уведомление от системы Wialon Billing.</p>
 </div>`,
-			Variables: `["company_name", "period", "amount", "currency", "invoice_number"]`,
+			Variables: `["company_name", "sender_company_name", "sender_phone", "period", "amount", "currency", "invoice_number"]`,
 			IsActive:  true,
 		},
 		{

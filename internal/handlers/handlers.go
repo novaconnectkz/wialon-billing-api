@@ -1610,65 +1610,34 @@ func (h *Handler) GetAccountCharges(c *gin.Context) {
 	})
 }
 
-// ExportAccountChargesExcel экспортирует детализацию начислений в Excel
-func (h *Handler) ExportAccountChargesExcel(c *gin.Context) {
-	idStr := c.Param("id")
-	accountID, err := strconv.ParseUint(idStr, 10, 32)
+// GenerateChargesExcelBytes генерирует Excel-отчёт начислений и возвращает байты
+func GenerateChargesExcelBytes(repo *repository.Repository, accountID uint, year, month int) ([]byte, error) {
+	charges, err := repo.GetDailyCharges(accountID, year, month)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный ID"})
-		return
+		return nil, err
 	}
 
-	// Парсим период
-	now := time.Now()
-	year := now.Year()
-	month := int(now.Month())
-
-	if yearStr := c.Query("year"); yearStr != "" {
-		if y, err := strconv.Atoi(yearStr); err == nil {
-			year = y
-		}
-	}
-	if monthStr := c.Query("month"); monthStr != "" {
-		if m, err := strconv.Atoi(monthStr); err == nil {
-			month = m
-		}
-	}
-
-	// Пересчитываем
-	h.snapshot.CalculateDailyChargesForPeriod(uint(accountID), year, month)
-
-	charges, err := h.repo.GetDailyCharges(uint(accountID), year, month)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	account, _ := h.repo.GetAccountByID(uint(accountID))
+	account, _ := repo.GetAccountByID(accountID)
 	accountName := "Аккаунт"
 	if account != nil {
 		accountName = account.Name
 	}
 
-	// Создаём Excel
 	f := excelize.NewFile()
 	sheet := "Детализация"
 	f.SetSheetName("Sheet1", sheet)
 
-	// Заголовок
 	monthNames := []string{"", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
 		"Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"}
 	title := fmt.Sprintf("Детализация начислений: %s — %s %d", accountName, monthNames[month], year)
 	f.SetCellValue(sheet, "A1", title)
 
-	// Шапка таблицы
 	headers := []string{"Дата", "Объектов", "Модуль", "Тип", "Цена", "Стоимость/день", "Валюта"}
 	for i, h := range headers {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 3)
 		f.SetCellValue(sheet, cell, h)
 	}
 
-	// Стиль заголовка
 	headerStyle, _ := f.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Bold: true},
 		Fill:      excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"#E2EFDA"}},
@@ -1676,7 +1645,6 @@ func (h *Handler) ExportAccountChargesExcel(c *gin.Context) {
 	})
 	f.SetCellStyle(sheet, "A3", "G3", headerStyle)
 
-	// Данные
 	row := 4
 	totalByCurrency := make(map[string]float64)
 	for _, ch := range charges {
@@ -1696,8 +1664,7 @@ func (h *Handler) ExportAccountChargesExcel(c *gin.Context) {
 		row++
 	}
 
-	// Итоговая строка
-	row++ // пустая строка-разделитель
+	row++
 	totalStyle, _ := f.NewStyle(&excelize.Style{
 		Font: &excelize.Font{Bold: true, Size: 11},
 		Fill: excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"#E2EFDA"}},
@@ -1711,7 +1678,6 @@ func (h *Handler) ExportAccountChargesExcel(c *gin.Context) {
 		i++
 	}
 
-	// Конвертация в валюту аккаунта — формула-эталон 1С
 	nowTime := time.Now()
 	reportEndDate := time.Date(year, time.Month(month)+1, 1, 0, 0, 0, 0, time.UTC)
 	isMonthClosed := nowTime.After(reportEndDate) || nowTime.Equal(reportEndDate)
@@ -1722,11 +1688,10 @@ func (h *Handler) ExportAccountChargesExcel(c *gin.Context) {
 
 	if isMonthClosed && billingCurrency != "EUR" {
 		rateDate := reportEndDate
-		exchangeRate, err := h.repo.GetExchangeRateByDate("EUR", rateDate)
+		exchangeRate, err := repo.GetExchangeRateByDate("EUR", rateDate)
 		if err == nil && exchangeRate != nil {
 			rate := exchangeRate.Rate
 
-			// Агрегация по модулям для формулы 1С
 			type excelModule struct {
 				ModuleID    uint
 				UnitPrice   float64
@@ -1750,7 +1715,6 @@ func (h *Handler) ExportAccountChargesExcel(c *gin.Context) {
 				em.DaysCount++
 			}
 
-			// Считаем KZT-итог по формуле 1С
 			var totalKZT float64
 			for _, em := range excelModules {
 				qty := math.Round(float64(em.TotalUnits) / float64(em.DaysCount))
@@ -1763,30 +1727,27 @@ func (h *Handler) ExportAccountChargesExcel(c *gin.Context) {
 			}
 			totalKZT = math.Round(totalKZT*100) / 100
 
-			row = row + i + 1 // пустая разделительная строка
+			row = row + i + 1
 
 			convertStyle, _ := f.NewStyle(&excelize.Style{
 				Font: &excelize.Font{Bold: true, Size: 11, Color: "#1F4E79"},
 				Fill: excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"#DAEEF3"}},
 			})
 
-			// Заголовок конвертации
 			f.SetCellValue(sheet, fmt.Sprintf("A%d", row), fmt.Sprintf("Курс EUR/%s на %s:", billingCurrency, rateDate.Format("02.01.2006")))
 			f.SetCellValue(sheet, fmt.Sprintf("F%d", row), rate)
 			f.SetCellStyle(sheet, fmt.Sprintf("A%d", row), fmt.Sprintf("G%d", row), convertStyle)
 			row++
 
-			// Итого в валюте аккаунта
 			f.SetCellValue(sheet, fmt.Sprintf("D%d", row), fmt.Sprintf("ИТОГО (%s):", billingCurrency))
 			f.SetCellValue(sheet, fmt.Sprintf("F%d", row), totalKZT)
 			f.SetCellValue(sheet, fmt.Sprintf("G%d", row), billingCurrency)
 			f.SetCellStyle(sheet, fmt.Sprintf("D%d", row), fmt.Sprintf("G%d", row), convertStyle)
 		} else {
-			log.Printf("ExportAccountChargesExcel: курс EUR/%s на %s не найден: %v", billingCurrency, rateDate.Format("2006-01-02"), err)
+			log.Printf("GenerateChargesExcelBytes: курс EUR/%s на %s не найден: %v", billingCurrency, rateDate.Format("2006-01-02"), err)
 		}
 	}
 
-	// Автоширина колонок
 	f.SetColWidth(sheet, "A", "A", 14)
 	f.SetColWidth(sheet, "B", "B", 12)
 	f.SetColWidth(sheet, "C", "C", 25)
@@ -1795,17 +1756,54 @@ func (h *Handler) ExportAccountChargesExcel(c *gin.Context) {
 	f.SetColWidth(sheet, "F", "F", 18)
 	f.SetColWidth(sheet, "G", "G", 10)
 
-	// Записываем в буфер
 	var buf bytes.Buffer
 	if err := f.Write(&buf); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// ExportAccountChargesExcel экспортирует детализацию начислений в Excel
+func (h *Handler) ExportAccountChargesExcel(c *gin.Context) {
+	idStr := c.Param("id")
+	accountID, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный ID"})
+		return
+	}
+
+	now := time.Now()
+	year := now.Year()
+	month := int(now.Month())
+	if yearStr := c.Query("year"); yearStr != "" {
+		if y, err := strconv.Atoi(yearStr); err == nil {
+			year = y
+		}
+	}
+	if monthStr := c.Query("month"); monthStr != "" {
+		if m, err := strconv.Atoi(monthStr); err == nil {
+			month = m
+		}
+	}
+
+	h.snapshot.CalculateDailyChargesForPeriod(uint(accountID), year, month)
+
+	excelData, err := GenerateChargesExcelBytes(h.repo, uint(accountID), year, month)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка генерации Excel"})
 		return
+	}
+
+	account, _ := h.repo.GetAccountByID(uint(accountID))
+	accountName := "Аккаунт"
+	if account != nil {
+		accountName = account.Name
 	}
 
 	filename := fmt.Sprintf("charges_%s_%d-%02d.xlsx", accountName, year, month)
 	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
-	c.Data(http.StatusOK, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buf.Bytes())
+	c.Data(http.StatusOK, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", excelData)
 }
 
 // === Partner Portal ===

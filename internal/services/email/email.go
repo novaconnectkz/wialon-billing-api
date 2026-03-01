@@ -93,8 +93,8 @@ func formatPeriodRu(t time.Time) string {
 	return fmt.Sprintf("%s %d", months[t.Month()], t.Year())
 }
 
-// SendInvoice отправляет счёт с PDF-вложением
-func (s *Service) SendInvoice(to string, invoice *models.Invoice, pdfData []byte) error {
+// SendInvoice отправляет счёт с PDF-вложением и дополнительными вложениями
+func (s *Service) SendInvoice(to string, invoice *models.Invoice, pdfData []byte, extraAttachments ...Attachment) error {
 	periodStr := formatPeriodRu(invoice.Period)
 
 	// Номер счёта: если есть Number — используем его, иначе ID
@@ -103,35 +103,45 @@ func (s *Service) SendInvoice(to string, invoice *models.Invoice, pdfData []byte
 		invoiceNumber = fmt.Sprintf("%d", invoice.ID)
 	}
 
+	// Получаем название компании-отправителя из настроек
+	senderCompanyName := ""
+	senderPhone := ""
+	settings, err := s.repo.GetSettings()
+	if err == nil && settings != nil {
+		senderCompanyName = settings.CompanyName
+		senderPhone = settings.CompanyPhone
+	}
+
+	// PDF — основное вложение
+	pdfAttachment := Attachment{
+		Filename:    fmt.Sprintf("invoice_%s.pdf", strings.ReplaceAll(invoiceNumber, "/", "_")),
+		ContentType: "application/pdf",
+		Data:        pdfData,
+	}
+	allAttachments := []Attachment{pdfAttachment}
+	allAttachments = append(allAttachments, extraAttachments...)
+
 	tmpl, err := s.repo.GetEmailTemplateByType("invoice")
 	if err != nil || tmpl == nil {
 		// Фоллбэк без шаблона
 		subject := fmt.Sprintf("Счёт на оплату №%s за %s", invoiceNumber, periodStr)
 		body := fmt.Sprintf("<p>Во вложении счёт на оплату на сумму %.2f %s.</p>", invoice.TotalAmount, invoice.Currency)
-		attachment := Attachment{
-			Filename:    fmt.Sprintf("invoice_%s.pdf", strings.ReplaceAll(invoiceNumber, "/", "_")),
-			ContentType: "application/pdf",
-			Data:        pdfData,
-		}
-		return s.sendWithAttachments(to, subject, body, attachment)
+		return s.sendWithAttachments(to, subject, body, allAttachments...)
 	}
 
 	vars := map[string]string{
-		"company_name":   invoice.Account.Name,
-		"period":         periodStr,
-		"amount":         fmt.Sprintf("%.2f", invoice.TotalAmount),
-		"currency":       invoice.Currency,
-		"invoice_number": invoiceNumber,
+		"company_name":        invoice.Account.Name,
+		"sender_company_name": senderCompanyName,
+		"sender_phone":        senderPhone,
+		"period":              periodStr,
+		"amount":              fmt.Sprintf("%.2f", invoice.TotalAmount),
+		"currency":            invoice.Currency,
+		"invoice_number":      invoiceNumber,
 	}
 
 	subject := renderTemplate(tmpl.Subject, vars)
 	body := renderTemplate(tmpl.HTMLBody, vars)
-	attachment := Attachment{
-		Filename:    fmt.Sprintf("invoice_%s.pdf", strings.ReplaceAll(invoiceNumber, "/", "_")),
-		ContentType: "application/pdf",
-		Data:        pdfData,
-	}
-	return s.sendWithAttachments(to, subject, body, attachment)
+	return s.sendWithAttachments(to, subject, body, allAttachments...)
 }
 
 // SendNotification отправляет уведомление
@@ -348,8 +358,16 @@ func (s *Service) sendMessage(client *smtp.Client, settings *models.SMTPSettings
 				buf.WriteString(fmt.Sprintf("%s: %s\r\n", k, v[0]))
 			}
 			buf.WriteString("\r\n")
-			buf.WriteString(base64.StdEncoding.EncodeToString(att.Data))
-			buf.WriteString("\r\n")
+			// RFC 2045: base64 строки должны быть не длиннее 76 символов
+			encoded := base64.StdEncoding.EncodeToString(att.Data)
+			for i := 0; i < len(encoded); i += 76 {
+				end := i + 76
+				if end > len(encoded) {
+					end = len(encoded)
+				}
+				buf.WriteString(encoded[i:end])
+				buf.WriteString("\r\n")
+			}
 		}
 
 		buf.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
