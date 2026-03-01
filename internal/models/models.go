@@ -28,6 +28,16 @@ type BillingSettings struct {
 	ExecutorName string  `gorm:"size:255" json:"executor_name"` // ФИО исполнителя
 	VATRate      float64 `gorm:"default:16" json:"vat_rate"`    // Ставка НДС (%)
 
+	// Подпись и печать (PNG в Base64)
+	SignatureImage string  `gorm:"type:text" json:"signature_image"` // PNG подписи в Base64
+	StampImage     string  `gorm:"type:text" json:"stamp_image"`     // PNG печати в Base64
+	SignatureX     float64 `gorm:"default:50" json:"signature_x"`    // X смещение подписи (мм)
+	SignatureY     float64 `gorm:"default:0" json:"signature_y"`     // Y смещение подписи (мм)
+	SignatureW     float64 `gorm:"default:40" json:"signature_w"`    // Ширина подписи (мм)
+	StampX         float64 `gorm:"default:90" json:"stamp_x"`        // X смещение печати (мм)
+	StampY         float64 `gorm:"default:5" json:"stamp_y"`         // Y смещение печати (мм)
+	StampW         float64 `gorm:"default:30" json:"stamp_w"`        // Ширина печати (мм)
+
 	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 }
 
@@ -36,6 +46,8 @@ type Module struct {
 	ID              uint      `gorm:"primaryKey" json:"id"`
 	Name            string    `gorm:"size:255;not null" json:"name"`
 	Description     string    `gorm:"type:text" json:"description"`
+	Code            string    `gorm:"size:20" json:"code"`                            // код модуля для счёта
+	Unit            string    `gorm:"size:50;default:'услуга'" json:"unit"`           // единица измерения для счёта
 	Price           float64   `gorm:"not null" json:"price"`                          // цена за единицу (или фикса)
 	ActivationPrice *float64  `json:"activation_price"`                               // цена подключения
 	Currency        string    `gorm:"size:3;not null" json:"currency"`                // "EUR", "RUB", "KZT"
@@ -102,6 +114,8 @@ type InvoiceLine struct {
 	InvoiceID   uint    `gorm:"not null" json:"invoice_id"`
 	ModuleID    uint    `gorm:"not null" json:"module_id"`
 	ModuleName  string  `gorm:"size:255;not null" json:"module_name"` // название на момент создания
+	ModuleCode  string  `gorm:"size:20" json:"module_code"`           // код модуля на момент создания
+	ModuleUnit  string  `gorm:"size:50" json:"module_unit"`           // единица измерения на момент создания
 	Quantity    float64 `gorm:"not null" json:"quantity"`             // кол-во (среднее объектов или 1)
 	UnitPrice   float64 `gorm:"not null" json:"unit_price"`           // цена за единицу на момент создания
 	TotalPrice  float64 `gorm:"not null" json:"total_price"`          // итого по строке

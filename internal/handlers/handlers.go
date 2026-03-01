@@ -1081,6 +1081,29 @@ func (h *Handler) GetInvoicePDF(c *gin.Context) {
 		return
 	}
 
+	// Подставляем актуальные коды и единицы модулей, если в строках они пустые
+	allModules, _ := h.repo.GetAllModules()
+	type moduleInfo struct {
+		Code string
+		Unit string
+	}
+	moduleMap := make(map[uint]moduleInfo)
+	for _, m := range allModules {
+		moduleMap[m.ID] = moduleInfo{Code: m.Code, Unit: m.Unit}
+	}
+	for i := range inv.Lines {
+		if inv.Lines[i].ModuleID > 0 {
+			if info, ok := moduleMap[inv.Lines[i].ModuleID]; ok {
+				if inv.Lines[i].ModuleCode == "" && info.Code != "" {
+					inv.Lines[i].ModuleCode = info.Code
+				}
+				if inv.Lines[i].ModuleUnit == "" && info.Unit != "" {
+					inv.Lines[i].ModuleUnit = info.Unit
+				}
+			}
+		}
+	}
+
 	// Генерируем PDF
 	generator := invoicesvc.NewPDFGenerator()
 	pdfBytes, err := generator.GenerateInvoicePDF(inv, settings, account)

@@ -175,6 +175,8 @@ func (s *Service) generateInvoiceForAccount(account models.Account, period, rate
 		line := models.InvoiceLine{
 			ModuleID:    module.ID,
 			ModuleName:  module.Name,
+			ModuleCode:  module.Code,
+			ModuleUnit:  module.Unit,
 			Quantity:    quantity,
 			UnitPrice:   unitPrice,
 			TotalPrice:  totalPrice,
