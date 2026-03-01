@@ -109,7 +109,7 @@ func (s *Service) SendInvoice(to string, invoice *models.Invoice, pdfData []byte
 		subject := fmt.Sprintf("Счёт на оплату №%s за %s", invoiceNumber, periodStr)
 		body := fmt.Sprintf("<p>Во вложении счёт на оплату на сумму %.2f %s.</p>", invoice.TotalAmount, invoice.Currency)
 		attachment := Attachment{
-			Filename:    fmt.Sprintf("invoice_%s.pdf", invoice.Period.Format("2006_01")),
+			Filename:    fmt.Sprintf("invoice_%s.pdf", strings.ReplaceAll(invoiceNumber, "/", "_")),
 			ContentType: "application/pdf",
 			Data:        pdfData,
 		}
@@ -127,7 +127,7 @@ func (s *Service) SendInvoice(to string, invoice *models.Invoice, pdfData []byte
 	subject := renderTemplate(tmpl.Subject, vars)
 	body := renderTemplate(tmpl.HTMLBody, vars)
 	attachment := Attachment{
-		Filename:    fmt.Sprintf("invoice_%s.pdf", invoice.Period.Format("2006_01")),
+		Filename:    fmt.Sprintf("invoice_%s.pdf", strings.ReplaceAll(invoiceNumber, "/", "_")),
 		ContentType: "application/pdf",
 		Data:        pdfData,
 	}

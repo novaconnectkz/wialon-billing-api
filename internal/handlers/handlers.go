@@ -1114,7 +1114,12 @@ func (h *Handler) GetInvoicePDF(c *gin.Context) {
 	}
 
 	// Отправляем PDF
-	filename := fmt.Sprintf("invoice_%d.pdf", inv.ID)
+	// Имя файла: используем номер счёта (заменяем / на _)
+	invoiceNum := inv.Number
+	if invoiceNum == "" {
+		invoiceNum = fmt.Sprintf("%d", inv.ID)
+	}
+	filename := fmt.Sprintf("invoice_%s.pdf", strings.ReplaceAll(invoiceNum, "/", "_"))
 	c.Header("Content-Type", "application/pdf")
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
 	c.Data(http.StatusOK, "application/pdf", pdfBytes)
@@ -2073,7 +2078,12 @@ func (h *Handler) GetPartnerInvoicePDF(c *gin.Context) {
 		return
 	}
 
-	filename := fmt.Sprintf("invoice_%d.pdf", inv.ID)
+	// Имя файла: используем номер счёта (заменяем / на _)
+	partnerInvoiceNum := inv.Number
+	if partnerInvoiceNum == "" {
+		partnerInvoiceNum = fmt.Sprintf("%d", inv.ID)
+	}
+	filename := fmt.Sprintf("invoice_%s.pdf", strings.ReplaceAll(partnerInvoiceNum, "/", "_"))
 	c.Header("Content-Type", "application/pdf")
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
 	c.Data(http.StatusOK, "application/pdf", pdfBytes)
