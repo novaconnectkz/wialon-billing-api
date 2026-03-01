@@ -2307,7 +2307,7 @@ func (h *Handler) buildExport1CInvoice(inv *models.Invoice, settings *models.Bil
 
 	return gin.H{
 		"document_number": docNumber,
-		"document_date":   inv.Period.Format("2006-01-02"),
+		"document_date":   inv.CreatedAt.Format("2006-01-02"),
 		"period":          inv.Period.Format("01.2006"),
 		"status":          inv.Status,
 		"currency":        inv.Currency,
