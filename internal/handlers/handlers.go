@@ -1126,6 +1126,7 @@ func (h *Handler) GetInvoicePDF(c *gin.Context) {
 }
 
 // GetInvoiceExcel возвращает Excel-отчёт начислений привязанный к счёту
+// Всегда пересчитывает из актуальных DailyCharges для корректности данных
 func (h *Handler) GetInvoiceExcel(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseUint(idStr, 10, 32)
@@ -1140,21 +1141,22 @@ func (h *Handler) GetInvoiceExcel(c *gin.Context) {
 		return
 	}
 
-	excelData := inv.ExcelReport
-	// Если Excel не был предгенерирован — генерируем на лету
-	if len(excelData) == 0 {
-		year := inv.Period.Year()
-		month := int(inv.Period.Month())
-		data, err := GenerateChargesExcelBytes(h.repo, inv.AccountID, year, month)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка генерации Excel"})
-			return
-		}
-		excelData = data
-		// Сохраняем для будущих запросов
-		inv.ExcelReport = excelData
-		h.repo.UpdateInvoice(inv)
+	year := inv.Period.Year()
+	month := int(inv.Period.Month())
+
+	// Пересчитываем начисления из актуальных снэпшотов
+	h.snapshot.CalculateDailyChargesForPeriod(inv.AccountID, year, month)
+
+	// Всегда генерируем Excel из актуальных DailyCharges
+	excelData, err := GenerateChargesExcelBytes(h.repo, inv.AccountID, year, month)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка генерации Excel"})
+		return
 	}
+
+	// Обновляем кэш в счёте
+	inv.ExcelReport = excelData
+	h.repo.UpdateInvoice(inv)
 
 	invoiceNum := inv.Number
 	if invoiceNum == "" {

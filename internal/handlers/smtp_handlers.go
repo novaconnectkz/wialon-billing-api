@@ -3,7 +3,6 @@ package handlers
 import (
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"log"
@@ -275,35 +274,8 @@ func (h *SMTPHandler) SendInvoiceEmail(c *gin.Context) {
 		return
 	}
 
-	// Берём предгенерированный Excel-отчёт из счёта
-	var extraAttachments []email.Attachment
-	excelData := inv.ExcelReport
-	if len(excelData) == 0 {
-		// Fallback: генерируем на лету, если не был предгенерирован
-		year := inv.Period.Year()
-		month := int(inv.Period.Month())
-		data, err := GenerateChargesExcelBytes(h.repo, inv.AccountID, year, month)
-		if err != nil {
-			log.Printf("[EMAIL] Ошибка генерации Excel для счёта %d: %v (продолжаем без Excel)", id, err)
-		} else {
-			excelData = data
-		}
-	}
-	if len(excelData) > 0 {
-		invoiceNumber := inv.Number
-		if invoiceNumber == "" {
-			invoiceNumber = fmt.Sprintf("%d", inv.ID)
-		}
-		excelFilename := fmt.Sprintf("charges_%s.xlsx", strings.ReplaceAll(invoiceNumber, "/", "_"))
-		extraAttachments = append(extraAttachments, email.Attachment{
-			Filename:    excelFilename,
-			ContentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-			Data:        excelData,
-		})
-	}
-
-	// Отправляем клиенту
-	if err := h.emailService.SendInvoice(inv.Account.BuyerEmail, inv, pdfData, extraAttachments...); err != nil {
+	// Отправляем клиенту (только PDF, без Excel-отчёта)
+	if err := h.emailService.SendInvoice(inv.Account.BuyerEmail, inv, pdfData); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка отправки: " + err.Error()})
 		return
 	}
@@ -312,7 +284,7 @@ func (h *SMTPHandler) SendInvoiceEmail(c *gin.Context) {
 	smtpSettings, _ := h.repo.GetSMTPSettings()
 	if smtpSettings != nil && smtpSettings.CopyEnabled && smtpSettings.CopyEmail != "" {
 		go func() {
-			if err := h.emailService.SendInvoice(smtpSettings.CopyEmail, inv, pdfData, extraAttachments...); err != nil {
+			if err := h.emailService.SendInvoice(smtpSettings.CopyEmail, inv, pdfData); err != nil {
 				log.Printf("[EMAIL] Ошибка отправки копии на %s: %v", smtpSettings.CopyEmail, err)
 			} else {
 				log.Printf("[EMAIL] Копия счёта отправлена на %s", smtpSettings.CopyEmail)
