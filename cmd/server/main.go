@@ -203,6 +203,7 @@ func main() {
 		{
 			settings.GET("", h.GetSettings)
 			settings.PUT("", h.UpdateSettings)
+			settings.POST("/api-token", h.GenerateAPIToken)
 		}
 
 		// Курсы валют (только для админов)
@@ -239,6 +240,15 @@ func main() {
 			invoices.PUT("/:id/status", h.UpdateInvoiceStatus)
 			invoices.DELETE("/clear", h.ClearAllInvoices)
 			invoices.POST("/:id/send", smtpHandler.SendInvoiceEmail)
+		}
+
+		// Экспорт для 1С (по API-токену, без JWT)
+		export1c := api.Group("/export/1c")
+		export1c.Use(middleware.APITokenAuth(db))
+		{
+			export1c.GET("/invoices", h.Export1CInvoices)
+			export1c.GET("/invoices/:id", h.Export1CInvoice)
+			export1c.PUT("/invoices/:id/status", h.Update1CInvoiceStatus)
 		}
 
 		// SMTP и шаблоны писем (только для админов)

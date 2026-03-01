@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"math"
@@ -2150,4 +2152,252 @@ func (h *Handler) GetPartnerInvoicePDF(c *gin.Context) {
 	c.Header("Content-Type", "application/pdf")
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
 	c.Data(http.StatusOK, "application/pdf", pdfBytes)
+}
+
+// === Экспорт в 1С ===
+
+// GenerateAPIToken генерирует новый API-токен для внешних интеграций
+func (h *Handler) GenerateAPIToken(c *gin.Context) {
+	// Генерируем 32 случайных байта → 64-символьный hex
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка генерации токена"})
+		return
+	}
+	token := hex.EncodeToString(tokenBytes)
+
+	// Загружаем настройки и сохраняем токен
+	settings, err := h.repo.GetSettings()
+	if err != nil || settings == nil {
+		settings = &models.BillingSettings{}
+	}
+	settings.APIToken = token
+
+	if err := h.repo.SaveSettings(settings); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка сохранения токена"})
+		return
+	}
+
+	log.Printf("[API] Сгенерирован новый API-токен для 1С")
+	c.JSON(http.StatusOK, gin.H{
+		"token":   token,
+		"message": "API-токен сгенерирован. Сохраните его — он отображается только один раз.",
+	})
+}
+
+// Export1CInvoices массовая выгрузка счетов за период для 1С
+func (h *Handler) Export1CInvoices(c *gin.Context) {
+	now := time.Now()
+	year := now.Year()
+	month := int(now.Month())
+
+	if yearStr := c.Query("year"); yearStr != "" {
+		if y, err := strconv.Atoi(yearStr); err == nil && y > 2000 && y < 2100 {
+			year = y
+		}
+	}
+	if monthStr := c.Query("month"); monthStr != "" {
+		if m, err := strconv.Atoi(monthStr); err == nil && m >= 1 && m <= 12 {
+			month = m
+		}
+	}
+	status := c.Query("status")
+
+	invoices, err := h.repo.GetInvoicesByPeriod(year, month, status)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка получения счетов: " + err.Error()})
+		return
+	}
+
+	// Получаем настройки поставщика
+	settings, _ := h.repo.GetSettings()
+	if settings == nil {
+		settings = &models.BillingSettings{}
+	}
+
+	// Формируем ответ
+	exportedInvoices := make([]gin.H, 0, len(invoices))
+	for _, inv := range invoices {
+		exportedInvoices = append(exportedInvoices, h.buildExport1CInvoice(&inv, settings))
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"invoices": exportedInvoices,
+		"meta": gin.H{
+			"exported_at":   time.Now().Format(time.RFC3339),
+			"total_count":   len(exportedInvoices),
+			"filter_year":   year,
+			"filter_month":  month,
+			"filter_status": status,
+		},
+	})
+}
+
+// Export1CInvoice выгрузка одного счёта для 1С
+func (h *Handler) Export1CInvoice(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный ID"})
+		return
+	}
+
+	inv, err := h.repo.GetInvoiceByID(uint(id))
+	if err != nil || inv == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Счёт не найден"})
+		return
+	}
+
+	settings, _ := h.repo.GetSettings()
+	if settings == nil {
+		settings = &models.BillingSettings{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"invoices": []gin.H{h.buildExport1CInvoice(inv, settings)},
+		"meta": gin.H{
+			"exported_at": time.Now().Format(time.RFC3339),
+			"total_count": 1,
+		},
+	})
+}
+
+// buildExport1CInvoice формирует JSON-объект счёта для 1С
+func (h *Handler) buildExport1CInvoice(inv *models.Invoice, settings *models.BillingSettings) gin.H {
+	// Номер документа
+	docNumber := inv.Number
+	if docNumber == "" {
+		docNumber = fmt.Sprintf("%d", inv.ID)
+	}
+
+	// Дата договора покупателя
+	var contractDate string
+	if inv.Account.ContractDate != nil {
+		contractDate = inv.Account.ContractDate.Format("2006-01-02")
+	}
+
+	// Строки счёта
+	lines := make([]gin.H, 0, len(inv.Lines))
+	for i, line := range inv.Lines {
+		unit := line.ModuleUnit
+		if unit == "" {
+			unit = "услуга"
+		}
+		lines = append(lines, gin.H{
+			"row_number":   i + 1,
+			"code":         line.ModuleCode,
+			"name":         line.ModuleName,
+			"unit":         unit,
+			"quantity":     line.Quantity,
+			"unit_price":   math.Round(line.UnitPrice*100) / 100,
+			"total_price":  math.Round(line.TotalPrice*100) / 100,
+			"pricing_type": line.PricingType,
+			"currency":     line.Currency,
+		})
+	}
+
+	// Расчёт НДС (включён в цену)
+	vatRate := settings.VATRate
+	if vatRate <= 0 {
+		vatRate = 16.0
+	}
+	subtotal := math.Round(inv.TotalAmount*100) / 100
+	vatAmount := math.Round(subtotal*vatRate/(100+vatRate)*100) / 100
+	totalWithoutVAT := math.Round((subtotal-vatAmount)*100) / 100
+
+	return gin.H{
+		"document_number": docNumber,
+		"document_date":   inv.Period.Format("2006-01-02"),
+		"period":          inv.Period.Format("01.2006"),
+		"status":          inv.Status,
+		"currency":        inv.Currency,
+
+		"supplier": gin.H{
+			"name":         settings.CompanyName,
+			"bin":          settings.CompanyBIN,
+			"address":      settings.CompanyAddress,
+			"phone":        settings.CompanyPhone,
+			"bank_name":    settings.BankName,
+			"bank_iik":     settings.BankIIK,
+			"bank_bik":     settings.BankBIK,
+			"bank_kbe":     settings.BankKbe,
+			"payment_code": settings.PaymentCode,
+		},
+
+		"buyer": gin.H{
+			"name":            inv.Account.BuyerName,
+			"bin":             inv.Account.BuyerBIN,
+			"address":         inv.Account.BuyerAddress,
+			"email":           inv.Account.BuyerEmail,
+			"phone":           inv.Account.BuyerPhone,
+			"contract_number": inv.Account.ContractNumber,
+			"contract_date":   contractDate,
+		},
+
+		"lines": lines,
+
+		"totals": gin.H{
+			"subtotal":          subtotal,
+			"vat_rate":          vatRate,
+			"vat_amount":        vatAmount,
+			"total_with_vat":    subtotal,
+			"total_without_vat": totalWithoutVAT,
+			"currency":          inv.Currency,
+		},
+	}
+}
+
+// Update1CInvoiceStatus обновляет статус счёта из 1С (например, "paid")
+func (h *Handler) Update1CInvoiceStatus(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный ID"})
+		return
+	}
+
+	var req struct {
+		Status string `json:"status" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Укажите status в теле запроса"})
+		return
+	}
+
+	// Проверка допустимых статусов
+	validStatuses := map[string]bool{"draft": true, "sent": true, "paid": true, "overdue": true}
+	if !validStatuses[req.Status] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Недопустимый статус. Допустимые: draft, sent, paid, overdue"})
+		return
+	}
+
+	inv, err := h.repo.GetInvoiceByID(uint(id))
+	if err != nil || inv == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Счёт не найден"})
+		return
+	}
+
+	inv.Status = req.Status
+	now := time.Now()
+
+	if req.Status == "sent" && inv.SentAt == nil {
+		inv.SentAt = &now
+	}
+	if req.Status == "paid" && inv.PaidAt == nil {
+		inv.PaidAt = &now
+	}
+
+	if err := h.repo.UpdateInvoice(inv); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка обновления статуса"})
+		return
+	}
+
+	log.Printf("[1С] Статус счёта #%s обновлён на '%s'", inv.Number, req.Status)
+	c.JSON(http.StatusOK, gin.H{
+		"message":         "Статус обновлён",
+		"invoice_id":      inv.ID,
+		"document_number": inv.Number,
+		"status":          inv.Status,
+		"paid_at":         inv.PaidAt,
+	})
 }

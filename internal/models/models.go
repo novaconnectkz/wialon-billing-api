@@ -28,6 +28,9 @@ type BillingSettings struct {
 	ExecutorName string  `gorm:"size:255" json:"executor_name"` // ФИО исполнителя
 	VATRate      float64 `gorm:"default:16" json:"vat_rate"`    // Ставка НДС (%)
 
+	// API-токен для внешних интеграций (1С)
+	APIToken string `gorm:"size:64" json:"api_token,omitempty"` // SHA-256 hex токен
+
 	// Подпись и печать (PNG в Base64)
 	SignatureImage string  `gorm:"type:text" json:"signature_image"` // PNG подписи в Base64
 	StampImage     string  `gorm:"type:text" json:"stamp_image"`     // PNG печати в Base64

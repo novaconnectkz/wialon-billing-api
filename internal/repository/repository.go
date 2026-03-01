@@ -486,6 +486,24 @@ func (r *Repository) ClearAllInvoices() (int64, error) {
 	return result.RowsAffected, result.Error
 }
 
+// GetInvoicesByPeriod возвращает счета за указанный месяц с опциональной фильтрацией по статусу
+func (r *Repository) GetInvoicesByPeriod(year, month int, status string) ([]models.Invoice, error) {
+	startOfMonth := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
+	endOfMonth := startOfMonth.AddDate(0, 1, 0)
+
+	query := r.db.Where("period >= ? AND period < ?", startOfMonth, endOfMonth)
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+
+	var invoices []models.Invoice
+	if err := query.Preload("Account").Preload("Lines").
+		Order("created_at DESC").Find(&invoices).Error; err != nil {
+		return nil, err
+	}
+	return invoices, nil
+}
+
 // GetSnapshotsByAccountAndPeriod возвращает снимки аккаунта за месяц
 func (r *Repository) GetSnapshotsByAccountAndPeriod(accountID uint, year, month int) ([]models.Snapshot, error) {
 	startOfMonth := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)

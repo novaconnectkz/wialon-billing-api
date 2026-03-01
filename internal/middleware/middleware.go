@@ -5,7 +5,9 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/user/wialon-billing-api/internal/models"
 	"github.com/user/wialon-billing-api/internal/services/auth"
+	"gorm.io/gorm"
 )
 
 // CORS middleware для кроссдоменных запросов
@@ -13,7 +15,7 @@ func CORS() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, X-API-Token, accept, origin, Cache-Control, X-Requested-With")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
 
 		if c.Request.Method == "OPTIONS" {
@@ -133,6 +135,49 @@ func RequirePartner() gin.HandlerFunc {
 			})
 			return
 		}
+		c.Next()
+	}
+}
+
+// APITokenAuth проверяет API-токен для внешних интеграций (1С)
+// Токен передаётся через query-параметр ?token= или заголовок X-API-Token
+func APITokenAuth(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Получаем токен из query или заголовка
+		token := c.Query("token")
+		if token == "" {
+			token = c.GetHeader("X-API-Token")
+		}
+		if token == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": "API-токен не указан. Передайте через ?token= или заголовок X-API-Token",
+			})
+			return
+		}
+
+		// Загружаем настройки и проверяем токен
+		var settings models.BillingSettings
+		if err := db.First(&settings).Error; err != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+				"error": "Ошибка загрузки настроек",
+			})
+			return
+		}
+
+		if settings.APIToken == "" {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error": "API-токен не настроен. Сгенерируйте токен в разделе Настройки → API",
+			})
+			return
+		}
+
+		if token != settings.APIToken {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": "Неверный API-токен",
+			})
+			return
+		}
+
 		c.Next()
 	}
 }
