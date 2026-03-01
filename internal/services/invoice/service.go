@@ -252,7 +252,7 @@ func (s *Service) convertCurrency(amount float64, from, to string, date time.Tim
 	return amountInKZT / rateToTarget.Rate, nil
 }
 
-// calculateAverageUnits рассчитывает среднее количество объектов за месяц
+// calculateAverageUnits рассчитывает среднее количество АКТИВНЫХ объектов за месяц
 func (s *Service) calculateAverageUnits(accountID uint, year, month int) (float64, error) {
 	snapshots, err := s.repo.GetSnapshotsByAccountAndPeriod(accountID, year, month)
 	if err != nil {
@@ -263,17 +263,21 @@ func (s *Service) calculateAverageUnits(accountID uint, year, month int) (float6
 		return 0, nil
 	}
 
-	// Считаем сумму объектов по всем дням
-	var totalUnits int
+	// Считаем сумму АКТИВНЫХ объектов по всем дням (без деактивированных)
+	var totalActiveUnits int
 	for _, s := range snapshots {
-		totalUnits += s.TotalUnits
+		activeUnits := s.TotalUnits - s.UnitsDeactivated
+		if activeUnits < 0 {
+			activeUnits = 0
+		}
+		totalActiveUnits += activeUnits
 	}
 
 	// Количество дней в месяце
 	daysInMonth := time.Date(year, time.Month(month)+1, 0, 0, 0, 0, 0, time.UTC).Day()
 
-	// Среднее = сумма / дней в месяце
-	return float64(totalUnits) / float64(daysInMonth), nil
+	// Среднее = сумма активных / дней в месяце
+	return float64(totalActiveUnits) / float64(daysInMonth), nil
 }
 
 // RecalculateCurrentPeriod пересчитывает счёт за текущий период

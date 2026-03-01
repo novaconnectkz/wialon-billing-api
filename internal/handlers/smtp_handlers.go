@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"log"
 
@@ -269,6 +270,16 @@ func (h *SMTPHandler) SendInvoiceEmail(c *gin.Context) {
 	if err := h.emailService.SendInvoice(inv.Account.BuyerEmail, inv, pdfData); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка отправки: " + err.Error()})
 		return
+	}
+
+	// Обновляем статус счёта на 'sent'
+	inv.Status = "sent"
+	now := time.Now()
+	if inv.SentAt == nil {
+		inv.SentAt = &now
+	}
+	if err := h.repo.UpdateInvoice(inv); err != nil {
+		log.Printf("[EMAIL] Письмо отправлено, но ошибка обновления статуса счёта %d: %v", id, err)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Счёт отправлен на %s", inv.Account.BuyerEmail)})

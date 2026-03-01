@@ -12,6 +12,7 @@ import (
 	"net/smtp"
 	"net/textproto"
 	"strings"
+	"time"
 
 	"github.com/user/wialon-billing-api/internal/models"
 	"github.com/user/wialon-billing-api/internal/repository"
@@ -83,12 +84,23 @@ func (s *Service) SendOTP(to, code string) error {
 	return s.send(to, subject, body)
 }
 
+// formatPeriodRu форматирует дату как "за февраль 2026"
+func formatPeriodRu(t time.Time) string {
+	months := []string{
+		"", "январь", "февраль", "март", "апрель", "май", "июнь",
+		"июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
+	}
+	return fmt.Sprintf("%s %d", months[t.Month()], t.Year())
+}
+
 // SendInvoice отправляет счёт с PDF-вложением
 func (s *Service) SendInvoice(to string, invoice *models.Invoice, pdfData []byte) error {
+	periodStr := formatPeriodRu(invoice.Period)
+
 	tmpl, err := s.repo.GetEmailTemplateByType("invoice")
 	if err != nil || tmpl == nil {
 		// Фоллбэк без шаблона
-		subject := fmt.Sprintf("Счёт на оплату за %s", invoice.Period.Format("01.2006"))
+		subject := fmt.Sprintf("Счёт на оплату за %s", periodStr)
 		body := fmt.Sprintf("<p>Во вложении счёт на оплату на сумму %.2f %s.</p>", invoice.TotalAmount, invoice.Currency)
 		attachment := Attachment{
 			Filename:    fmt.Sprintf("invoice_%s.pdf", invoice.Period.Format("2006_01")),
@@ -100,7 +112,7 @@ func (s *Service) SendInvoice(to string, invoice *models.Invoice, pdfData []byte
 
 	vars := map[string]string{
 		"company_name":   invoice.Account.Name,
-		"period":         invoice.Period.Format("01.2006"),
+		"period":         periodStr,
 		"amount":         fmt.Sprintf("%.2f", invoice.TotalAmount),
 		"currency":       invoice.Currency,
 		"invoice_number": fmt.Sprintf("%d", invoice.ID),
