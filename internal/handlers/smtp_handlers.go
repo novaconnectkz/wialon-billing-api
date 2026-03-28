@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -280,7 +281,19 @@ func (h *SMTPHandler) SendInvoiceEmail(c *gin.Context) {
 		return
 	}
 
-	// Отправляем копию если включено
+	// Отправляем копии на дополнительные email покупателя (бухгалтерия, администратор и т.д.)
+	ccEmails := parseJSONEmails(inv.Account.CcEmails)
+	for _, cc := range ccEmails {
+		go func(addr string) {
+			if err := h.emailService.SendInvoice(addr, inv, pdfData); err != nil {
+				log.Printf("[EMAIL] Ошибка отправки CC на %s: %v", addr, err)
+			} else {
+				log.Printf("[EMAIL] Копия счёта отправлена на CC: %s", addr)
+			}
+		}(cc)
+	}
+
+	// Отправляем копию если включено (глобальная копия оператору)
 	smtpSettings, _ := h.repo.GetSMTPSettings()
 	if smtpSettings != nil && smtpSettings.CopyEnabled && smtpSettings.CopyEmail != "" {
 		go func() {
@@ -303,4 +316,17 @@ func (h *SMTPHandler) SendInvoiceEmail(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Счёт отправлен на %s", inv.Account.BuyerEmail)})
+}
+
+// parseJSONEmails десериализует JSON-массив email из строки
+func parseJSONEmails(jsonStr string) []string {
+	if jsonStr == "" {
+		return nil
+	}
+	var emails []string
+	if err := json.Unmarshal([]byte(jsonStr), &emails); err != nil {
+		log.Printf("[EMAIL] Ошибка парсинга cc_emails: %v", err)
+		return nil
+	}
+	return emails
 }

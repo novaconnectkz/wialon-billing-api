@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -123,13 +125,14 @@ func (h *Handler) UpdateAccountDetails(c *gin.Context) {
 	}
 
 	var req struct {
-		BuyerName      string  `json:"buyer_name"`
-		BuyerBIN       string  `json:"buyer_bin"`
-		BuyerAddress   string  `json:"buyer_address"`
-		BuyerEmail     string  `json:"buyer_email"`
-		BuyerPhone     string  `json:"buyer_phone"`
-		ContractNumber string  `json:"contract_number"`
-		ContractDate   *string `json:"contract_date"` // формат: 2006-01-02
+		BuyerName      string   `json:"buyer_name"`
+		BuyerBIN       string   `json:"buyer_bin"`
+		BuyerAddress   string   `json:"buyer_address"`
+		BuyerEmail     string   `json:"buyer_email"`
+		CcEmails       []string `json:"cc_emails"`
+		BuyerPhone     string   `json:"buyer_phone"`
+		ContractNumber string   `json:"contract_number"`
+		ContractDate   *string  `json:"contract_date"` // формат: 2006-01-02
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -148,6 +151,42 @@ func (h *Handler) UpdateAccountDetails(c *gin.Context) {
 	account.BuyerEmail = req.BuyerEmail
 	account.BuyerPhone = req.BuyerPhone
 	account.ContractNumber = req.ContractNumber
+
+	// Обработка дополнительных email для рассылки (не для OTP)
+	if len(req.CcEmails) > 0 {
+		// Лимит: максимум 5 адресов
+		if len(req.CcEmails) > 5 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Максимум 5 дополнительных email"})
+			return
+		}
+		// Валидация и очистка
+		emailRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
+		var validEmails []string
+		seen := make(map[string]bool)
+		for _, e := range req.CcEmails {
+			e = strings.TrimSpace(e)
+			if e == "" {
+				continue
+			}
+			eLower := strings.ToLower(e)
+			if !emailRegex.MatchString(eLower) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Некорректный email: %s", e)})
+				return
+			}
+			if !seen[eLower] {
+				seen[eLower] = true
+				validEmails = append(validEmails, eLower)
+			}
+		}
+		if len(validEmails) > 0 {
+			jsonBytes, _ := json.Marshal(validEmails)
+			account.CcEmails = string(jsonBytes)
+		} else {
+			account.CcEmails = ""
+		}
+	} else {
+		account.CcEmails = ""
+	}
 
 	if req.ContractDate != nil && *req.ContractDate != "" {
 		t, err := time.Parse("2006-01-02", *req.ContractDate)

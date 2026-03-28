@@ -78,6 +78,7 @@ type Account struct {
 	BuyerBIN       string     `gorm:"size:20" json:"buyer_bin"`       // БИН/ИИН
 	BuyerAddress   string     `gorm:"type:text" json:"buyer_address"` // Адрес
 	BuyerEmail     string     `gorm:"size:255" json:"buyer_email"`    // Email (логин + рассылка)
+	CcEmails       string     `gorm:"type:text" json:"cc_emails"`     // Доп. email для рассылки (JSON массив, не для OTP)
 	BuyerPhone     string     `gorm:"size:50" json:"buyer_phone"`     // Телефон
 	ContractNumber string     `gorm:"size:50" json:"contract_number"` // Номер договора
 	ContractDate   *time.Time `json:"contract_date"`                  // Дата договора
