@@ -2,6 +2,7 @@ package repository
 
 import (
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/user/wialon-billing-api/internal/config"
@@ -61,7 +62,34 @@ func NewPostgresDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
 		return nil, err
 	}
 
+	// Миграция: перенумерация существующих счетов в формат WH-N
+	migrateInvoiceNumbers(db)
+
 	return db, nil
+}
+
+// migrateInvoiceNumbers перенумеровывает существующие счета в формат WH-N (одноразовая миграция)
+func migrateInvoiceNumbers(db *gorm.DB) {
+	// Проверяем, есть ли счета со старым форматом (не начинающиеся с WH-)
+	var oldCount int64
+	db.Model(&models.Invoice{}).Where("number NOT LIKE 'WH-%' OR number IS NULL OR number = ''").Count(&oldCount)
+	if oldCount == 0 {
+		return // Все уже в новом формате
+	}
+
+	log.Printf("[МИГРАЦИЯ] Перенумерация %d счетов в формат WH-N...", oldCount)
+
+	// Получаем ВСЕ счета, отсортированные по дате создания
+	var allInvoices []models.Invoice
+	db.Order("created_at ASC").Find(&allInvoices)
+
+	// Присваиваем новые номера по порядку
+	for i, inv := range allInvoices {
+		newNumber := fmt.Sprintf("WH-%d", i+1)
+		db.Model(&models.Invoice{}).Where("id = ?", inv.ID).Update("number", newNumber)
+	}
+
+	log.Printf("[МИГРАЦИЯ] Перенумеровано %d счетов", len(allInvoices))
 }
 
 // NewRepository создаёт новый репозиторий
@@ -474,6 +502,21 @@ func (r *Repository) CountInvoicesByAccount(accountID uint) (int64, error) {
 		return 0, err
 	}
 	return count, nil
+}
+
+// GetMaxInvoiceSequence возвращает максимальный глобальный порядковый номер счёта (из формата WH-N)
+func (r *Repository) GetMaxInvoiceSequence() (int64, error) {
+	var maxNum int64
+	// Извлекаем число после "WH-" и находим максимум
+	err := r.db.Model(&models.Invoice{}).
+		Select("COALESCE(MAX(CAST(REPLACE(number, 'WH-', '') AS INTEGER)), 0)").
+		Where("number LIKE 'WH-%'").
+		Scan(&maxNum).Error
+	if err != nil {
+		// Фоллбэк: считаем общее количество счетов
+		r.db.Model(&models.Invoice{}).Count(&maxNum)
+	}
+	return maxNum, nil
 }
 
 // ClearAllInvoices удаляет все счета и связанные строки
